@@ -6,7 +6,6 @@ import (
 	"net"
 	"net/http"
 	"net/url"
-	"strconv"
 	"strings"
 	"time"
 )
@@ -56,7 +55,9 @@ func httpProbe(target string, expect2xx bool) (string, error) {
 	// HTTP Client configuration
 	tr := &http.Transport{
 		TLSClientConfig: &tls.Config{InsecureSkipVerify: true},
-		DialTimeout:     15 * time.Second,
+		DialContext: (&net.Dialer{
+			Timeout: 15 * time.Second,
+		}).DialContext,
 	}
 	client := &http.Client{
 		Transport: tr,
