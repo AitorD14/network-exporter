@@ -8,6 +8,7 @@ import (
 	"io"
 	"log"
 	"net/http"
+	_ "net/http/pprof"
 	"os"
 	"strings"
 	"time"
@@ -37,6 +38,11 @@ func main() {
 	// Add basic auth middleware to all routes except health
 	r.HandleFunc("/health", healthHandler).Methods("GET")
 	r.HandleFunc("/probe", basicAuthWithConfig(webConfig, probeHandler)).Methods("GET")
+	
+	// Add debug profiling routes (only in debug mode)
+	if os.Getenv("DEBUG") == "true" || os.Getenv("DEBUG") == "1" {
+		r.PathPrefix("/debug/pprof/").Handler(http.DefaultServeMux)
+	}
 
 	// Server configuration
 	port := os.Getenv("PORT")
@@ -92,6 +98,11 @@ func probeHandler(w http.ResponseWriter, r *http.Request) {
 	
 	module := r.URL.Query().Get("module")
 	target := r.URL.Query().Get("target")
+
+	// Debug logging
+	if os.Getenv("DEBUG") == "true" || os.Getenv("DEBUG") == "1" {
+		log.Printf("DEBUG: Probe request - module=%s target=%s", module, target)
+	}
 
 	if target == "" {
 		http.Error(w, "Error: 'target' not specified\n", http.StatusBadRequest)
