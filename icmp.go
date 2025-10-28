@@ -55,12 +55,13 @@ func icmpProbe(target string) (string, error) {
 	// Store DNS time in the icmp_times for convenience
 	icmpTimes["resolve"] = dnsLookupTime
 
-	// 3) MTR
-	mtrHops, err := runMTRJSON(ipAddress)
-	if err != nil {
-		// If MTR fails, continue without MTR data
-		mtrHops = []MTRHop{}
-	}
+	// 3) MTR - TEMPORARILY DISABLED FOR CPU TESTING
+	// mtrHops, err := runMTRJSON(ipAddress)
+	// if err != nil {
+	// 	// If MTR fails, continue without MTR data
+	// 	mtrHops = []MTRHop{}
+	// }
+	mtrHops := []MTRHop{} // Skip MTR temporarily to test CPU usage
 
 	// 4) Calculate total duration
 	endProbe := time.Now()
