@@ -22,33 +22,43 @@ var mtrCacheMutex sync.RWMutex
 var mtrCacheTime = make(map[string]time.Time)
 
 // icmpProbe performs DNS lookup, ICMP ping, MTR and returns metrics in Prometheus format
-func icmpProbe(target string) (string, error) {
+func icmpProbe(ctx context.Context, target string) (string, error) {
 	metricPrefix := "networking_"
 	startTime := time.Now()
 
-	// 1) DNS lookup
+	// 1) DNS lookup with context timeout
 	startDNS := time.Now()
-	ips, err := net.LookupIP(target)
+	
+	// Create DNS resolver with context
+	resolver := &net.Resolver{}
+	ips, err := resolver.LookupIPAddr(ctx, target)
 	if err != nil {
 		return buildDNSFailResponse(metricPrefix, target, err), nil
 	}
 	endDNS := time.Now()
 	dnsLookupTime := endDNS.Sub(startDNS).Seconds()
+	
+	// Convert IPAddr to IP for compatibility
+	var ipList []net.IP
+	for _, ip := range ips {
+		ipList = append(ipList, ip.IP)
+	}
+	ips2 := ipList
 
-	if len(ips) == 0 {
+	if len(ips2) == 0 {
 		return buildDNSFailResponse(metricPrefix, target, fmt.Errorf("no IP addresses found")), nil
 	}
 
 	// Extract IP and protocol
-	ipAddress := ips[0].String()
+	ipAddress := ips2[0].String()
 	ipProtocol := 4
-	if ips[0].To4() == nil {
+	if ips2[0].To4() == nil {
 		ipProtocol = 6
 	}
 	ipAddrHash := hashIP(ipAddress)
 
-	// 2) ICMP Ping
-	icmpSuccess, icmpReplyHopLimit, icmpTimes, err := runPing(ipAddress)
+	// 2) ICMP Ping with context
+	icmpSuccess, icmpReplyHopLimit, icmpTimes, err := runPing(ctx, ipAddress)
 	if err != nil {
 		icmpSuccess = 0
 	}
@@ -119,8 +129,8 @@ func icmpProbe(target string) (string, error) {
 	return strings.Join(lines, "\n") + "\n", nil
 }
 
-// runPing runs a single ICMP ping using 'ping' command
-func runPing(ipAddress string) (int, float64, map[string]float64, error) {
+// runPing runs a single ICMP ping using 'ping' command with context timeout
+func runPing(ctx context.Context, ipAddress string) (int, float64, map[string]float64, error) {
 	startSetup := time.Now()
 	endSetup := time.Now()
 	setupTime := endSetup.Sub(startSetup).Seconds()
@@ -129,7 +139,7 @@ func runPing(ipAddress string) (int, float64, map[string]float64, error) {
 	replyTTL := 0.0
 	success := 0
 
-	cmd := exec.Command("ping", "-c", "1", "-W", "1", ipAddress)
+	cmd := exec.CommandContext(ctx, "ping", "-c", "1", "-W", "1", ipAddress)
 	output, err := cmd.Output()
 	endRTT := time.Now()
 	rttTime := endRTT.Sub(startRTT).Seconds()

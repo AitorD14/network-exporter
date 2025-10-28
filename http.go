@@ -11,17 +11,17 @@ import (
 )
 
 // http2xxProbe performs HTTP/HTTPS probe expecting 2xx responses
-func http2xxProbe(target string) (string, error) {
-	return httpProbe(target, true)
+func http2xxProbe(ctx context.Context, target string) (string, error) {
+	return httpProbe(ctx, target, true)
 }
 
 // http4xxProbe performs HTTP/HTTPS probe expecting 4xx responses
-func http4xxProbe(target string) (string, error) {
-	return httpProbe(target, false)
+func http4xxProbe(ctx context.Context, target string) (string, error) {
+	return httpProbe(ctx, target, false)
 }
 
 // httpProbe performs HTTP/HTTPS connectivity checks
-func httpProbe(target string, expect2xx bool) (string, error) {
+func httpProbe(ctx context.Context, target string, expect2xx bool) (string, error) {
 	metricPrefix := "networking_"
 	startTime := time.Now()
 

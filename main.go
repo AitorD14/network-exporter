@@ -93,28 +93,28 @@ func probeHandler(w http.ResponseWriter, r *http.Request) {
 
 	switch module {
 	case "icmp":
-		result, err := icmpProbe(target)
+		result, err := icmpProbe(ctx, target)
 		if err != nil {
 			http.Error(w, fmt.Sprintf("ICMP probe failed: %v\n", err), http.StatusInternalServerError)
 			return
 		}
 		fmt.Fprint(w, result)
 	case "http_2xx":
-		result, err := http2xxProbe(target)
+		result, err := http2xxProbe(ctx, target)
 		if err != nil {
 			http.Error(w, fmt.Sprintf("HTTP 2xx probe failed: %v\n", err), http.StatusInternalServerError)
 			return
 		}
 		fmt.Fprint(w, result)
 	case "http_4xx":
-		result, err := http4xxProbe(target)
+		result, err := http4xxProbe(ctx, target)
 		if err != nil {
 			http.Error(w, fmt.Sprintf("HTTP 4xx probe failed: %v\n", err), http.StatusInternalServerError)
 			return
 		}
 		fmt.Fprint(w, result)
 	case "tcp_connect":
-		result, err := tcpProbe(target)
+		result, err := tcpProbe(ctx, target)
 		if err != nil {
 			http.Error(w, fmt.Sprintf("TCP probe failed: %v\n", err), http.StatusInternalServerError)
 			return

@@ -10,7 +10,7 @@ import (
 )
 
 // tcpProbe performs basic TCP connectivity checks
-func tcpProbe(target string) (string, error) {
+func tcpProbe(ctx context.Context, target string) (string, error) {
 	metricPrefix := "networking_"
 	startTime := time.Now()
 
