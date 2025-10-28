@@ -7,6 +7,7 @@ import (
 	"net"
 	"net/http"
 	"net/url"
+	"strconv"
 	"strings"
 	"time"
 )
@@ -32,9 +33,10 @@ func httpProbe(ctx context.Context, target string, expect2xx bool) (string, erro
 		return buildHTTPFailResponse(metricPrefix, target, err), nil
 	}
 
-	// DNS resolution timing
+	// DNS resolution timing with context
 	startDNS := time.Now()
-	ips, err := net.LookupIP(parsedURL.Hostname())
+	resolver := &net.Resolver{}
+	ips, err := resolver.LookupIPAddr(ctx, parsedURL.Hostname())
 	if err != nil {
 		return buildHTTPFailResponse(metricPrefix, target, err), nil
 	}
@@ -46,27 +48,30 @@ func httpProbe(ctx context.Context, target string, expect2xx bool) (string, erro
 	}
 
 	// IP details
-	ipAddress := ips[0].String()
+	ipAddress := ips[0].IP.String()
 	ipProtocol := 4
-	if ips[0].To4() == nil {
+	if ips[0].IP.To4() == nil {
 		ipProtocol = 6
 	}
 	ipAddrHash := hashIP(ipAddress)
 
-	// HTTP Client configuration
+	// HTTP Client configuration with context
 	tr := &http.Transport{
 		TLSClientConfig: &tls.Config{InsecureSkipVerify: true},
 		DialContext: (&net.Dialer{
-			Timeout: 15 * time.Second,
+			Timeout: 10 * time.Second,
 		}).DialContext,
+		MaxIdleConns:        10,
+		MaxIdleConnsPerHost: 2,
+		IdleConnTimeout:     30 * time.Second,
 	}
 	client := &http.Client{
 		Transport: tr,
-		Timeout:   15 * time.Second,
+		Timeout:   10 * time.Second,
 	}
 
-	// Create request
-	req, err := http.NewRequest("GET", target, nil)
+	// Create request with context
+	req, err := http.NewRequestWithContext(ctx, "GET", target, nil)
 	if err != nil {
 		return buildHTTPFailResponse(metricPrefix, target, err), nil
 	}
@@ -118,54 +123,109 @@ func httpProbe(ctx context.Context, target string, expect2xx bool) (string, erro
 	endProbe := time.Now()
 	probeDurationSeconds := endProbe.Sub(startTime).Seconds()
 
-	// Build Prometheus lines
-	var lines []string
+	// Build Prometheus lines efficiently
+	var builder strings.Builder
+	builder.Grow(1024) // Pre-allocate capacity
 
 	// DNS metric
-	lines = append(lines, fmt.Sprintf("# HELP %sprobe_dns_lookup_time_seconds Time spent resolving DNS.", metricPrefix))
-	lines = append(lines, fmt.Sprintf("# TYPE %sprobe_dns_lookup_time_seconds gauge", metricPrefix))
-	lines = append(lines, fmt.Sprintf("%sprobe_dns_lookup_time_seconds %f", metricPrefix, dnsLookupTime))
+	builder.WriteString("# HELP ")
+	builder.WriteString(metricPrefix)
+	builder.WriteString("probe_dns_lookup_time_seconds Time spent resolving DNS.\n# TYPE ")
+	builder.WriteString(metricPrefix)
+	builder.WriteString("probe_dns_lookup_time_seconds gauge\n")
+	builder.WriteString(metricPrefix)
+	builder.WriteString("probe_dns_lookup_time_seconds ")
+	builder.WriteString(strconv.FormatFloat(dnsLookupTime, 'f', 6, 64))
+	builder.WriteString("\n")
 
 	// Total probe duration
-	lines = append(lines, fmt.Sprintf("# HELP %sprobe_duration_seconds Total duration of the HTTP probe (seconds).", metricPrefix))
-	lines = append(lines, fmt.Sprintf("# TYPE %sprobe_duration_seconds gauge", metricPrefix))
-	lines = append(lines, fmt.Sprintf("%sprobe_duration_seconds %f", metricPrefix, probeDurationSeconds))
+	builder.WriteString("# HELP ")
+	builder.WriteString(metricPrefix)
+	builder.WriteString("probe_duration_seconds Total duration of the HTTP probe (seconds).\n# TYPE ")
+	builder.WriteString(metricPrefix)
+	builder.WriteString("probe_duration_seconds gauge\n")
+	builder.WriteString(metricPrefix)
+	builder.WriteString("probe_duration_seconds ")
+	builder.WriteString(strconv.FormatFloat(probeDurationSeconds, 'f', 6, 64))
+	builder.WriteString("\n")
 
-	// HTTP duration
-	lines = append(lines, fmt.Sprintf("# HELP %sprobe_http_duration_seconds Duration of HTTP request by phase.", metricPrefix))
-	lines = append(lines, fmt.Sprintf("# TYPE %sprobe_http_duration_seconds gauge", metricPrefix))
-	lines = append(lines, fmt.Sprintf("%sprobe_http_duration_seconds{phase=\"resolve\"} %f", metricPrefix, dnsLookupTime))
-	lines = append(lines, fmt.Sprintf("%sprobe_http_duration_seconds{phase=\"connect\"} %f", metricPrefix, httpDuration))
-	lines = append(lines, fmt.Sprintf("%sprobe_http_duration_seconds{phase=\"processing\"} %f", metricPrefix, httpDuration))
+	// HTTP duration phases
+	builder.WriteString("# HELP ")
+	builder.WriteString(metricPrefix)
+	builder.WriteString("probe_http_duration_seconds Duration of HTTP request by phase.\n# TYPE ")
+	builder.WriteString(metricPrefix)
+	builder.WriteString("probe_http_duration_seconds gauge\n")
+	builder.WriteString(metricPrefix)
+	builder.WriteString("probe_http_duration_seconds{phase=\"resolve\"} ")
+	builder.WriteString(strconv.FormatFloat(dnsLookupTime, 'f', 6, 64))
+	builder.WriteString("\n")
+	builder.WriteString(metricPrefix)
+	builder.WriteString("probe_http_duration_seconds{phase=\"connect\"} ")
+	builder.WriteString(strconv.FormatFloat(httpDuration, 'f', 6, 64))
+	builder.WriteString("\n")
+	builder.WriteString(metricPrefix)
+	builder.WriteString("probe_http_duration_seconds{phase=\"processing\"} ")
+	builder.WriteString(strconv.FormatFloat(httpDuration, 'f', 6, 64))
+	builder.WriteString("\n")
 
 	// HTTP status code
-	lines = append(lines, fmt.Sprintf("# HELP %sprobe_http_status_code HTTP status code.", metricPrefix))
-	lines = append(lines, fmt.Sprintf("# TYPE %sprobe_http_status_code gauge", metricPrefix))
-	lines = append(lines, fmt.Sprintf("%sprobe_http_status_code %d", metricPrefix, statusCode))
+	builder.WriteString("# HELP ")
+	builder.WriteString(metricPrefix)
+	builder.WriteString("probe_http_status_code HTTP status code.\n# TYPE ")
+	builder.WriteString(metricPrefix)
+	builder.WriteString("probe_http_status_code gauge\n")
+	builder.WriteString(metricPrefix)
+	builder.WriteString("probe_http_status_code ")
+	builder.WriteString(strconv.Itoa(statusCode))
+	builder.WriteString("\n")
 
 	// IP hash
-	lines = append(lines, fmt.Sprintf("# HELP %sip_addr_hash Hash of the resolved IP address.", metricPrefix))
-	lines = append(lines, fmt.Sprintf("# TYPE %sip_addr_hash gauge", metricPrefix))
-	lines = append(lines, fmt.Sprintf("%sip_addr_hash %d", metricPrefix, ipAddrHash))
+	builder.WriteString("# HELP ")
+	builder.WriteString(metricPrefix)
+	builder.WriteString("ip_addr_hash Hash of the resolved IP address.\n# TYPE ")
+	builder.WriteString(metricPrefix)
+	builder.WriteString("ip_addr_hash gauge\n")
+	builder.WriteString(metricPrefix)
+	builder.WriteString("ip_addr_hash ")
+	builder.WriteString(strconv.FormatUint(uint64(ipAddrHash), 10))
+	builder.WriteString("\n")
 
 	// IP protocol
-	lines = append(lines, fmt.Sprintf("# HELP %sip_protocol IP protocol version (4 or 6).", metricPrefix))
-	lines = append(lines, fmt.Sprintf("# TYPE %sip_protocol gauge", metricPrefix))
-	lines = append(lines, fmt.Sprintf("%sip_protocol %d", metricPrefix, ipProtocol))
+	builder.WriteString("# HELP ")
+	builder.WriteString(metricPrefix)
+	builder.WriteString("ip_protocol IP protocol version (4 or 6).\n# TYPE ")
+	builder.WriteString(metricPrefix)
+	builder.WriteString("ip_protocol gauge\n")
+	builder.WriteString(metricPrefix)
+	builder.WriteString("ip_protocol ")
+	builder.WriteString(strconv.Itoa(ipProtocol))
+	builder.WriteString("\n")
 
 	// SSL certificate expiry (if applicable)
 	if sslEarliestCertExpiry > 0 {
-		lines = append(lines, fmt.Sprintf("# HELP %sprobe_ssl_earliest_cert_expiry SSL certificate expiry timestamp.", metricPrefix))
-		lines = append(lines, fmt.Sprintf("# TYPE %sprobe_ssl_earliest_cert_expiry gauge", metricPrefix))
-		lines = append(lines, fmt.Sprintf("%sprobe_ssl_earliest_cert_expiry %f", metricPrefix, sslEarliestCertExpiry))
+		builder.WriteString("# HELP ")
+		builder.WriteString(metricPrefix)
+		builder.WriteString("probe_ssl_earliest_cert_expiry SSL certificate expiry timestamp.\n# TYPE ")
+		builder.WriteString(metricPrefix)
+		builder.WriteString("probe_ssl_earliest_cert_expiry gauge\n")
+		builder.WriteString(metricPrefix)
+		builder.WriteString("probe_ssl_earliest_cert_expiry ")
+		builder.WriteString(strconv.FormatFloat(sslEarliestCertExpiry, 'f', 6, 64))
+		builder.WriteString("\n")
 	}
 
 	// Success
-	lines = append(lines, fmt.Sprintf("# HELP %sprobe_success Whether the probe was successful (1 = OK, 0 = fail).", metricPrefix))
-	lines = append(lines, fmt.Sprintf("# TYPE %sprobe_success gauge", metricPrefix))
-	lines = append(lines, fmt.Sprintf("%sprobe_success %d", metricPrefix, success))
+	builder.WriteString("# HELP ")
+	builder.WriteString(metricPrefix)
+	builder.WriteString("probe_success Whether the probe was successful (1 = OK, 0 = fail).\n# TYPE ")
+	builder.WriteString(metricPrefix)
+	builder.WriteString("probe_success gauge\n")
+	builder.WriteString(metricPrefix)
+	builder.WriteString("probe_success ")
+	builder.WriteString(strconv.Itoa(success))
+	builder.WriteString("\n")
 
-	return strings.Join(lines, "\n") + "\n", nil
+	return builder.String(), nil
 }
 
 // buildHTTPFailResponse returns minimal Prometheus metrics with success=0

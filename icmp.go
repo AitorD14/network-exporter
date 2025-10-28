@@ -77,56 +77,140 @@ func icmpProbe(ctx context.Context, target string) (string, error) {
 	endProbe := time.Now()
 	probeDurationSeconds := endProbe.Sub(startTime).Seconds()
 
-	// Build Prometheus lines
-	var lines []string
+	// Build Prometheus lines efficiently
+	var builder strings.Builder
+	builder.Grow(1024) // Pre-allocate capacity
 
 	// DNS metric
-	lines = append(lines, fmt.Sprintf("# HELP %sdns_lookup_time_seconds Time spent resolving DNS.", metricPrefix))
-	lines = append(lines, fmt.Sprintf("# TYPE %sdns_lookup_time_seconds gauge", metricPrefix))
-	lines = append(lines, fmt.Sprintf("%sdns_lookup_time_seconds %f", metricPrefix, dnsLookupTime))
+	builder.WriteString("# HELP ")
+	builder.WriteString(metricPrefix)
+	builder.WriteString("dns_lookup_time_seconds Time spent resolving DNS.\n# TYPE ")
+	builder.WriteString(metricPrefix)
+	builder.WriteString("dns_lookup_time_seconds gauge\n")
+	builder.WriteString(metricPrefix)
+	builder.WriteString("dns_lookup_time_seconds ")
+	builder.WriteString(strconv.FormatFloat(dnsLookupTime, 'f', 6, 64))
+	builder.WriteString("\n")
 
 	// Total probe duration
-	lines = append(lines, fmt.Sprintf("# HELP %sduration_seconds Total duration of the ICMP probe (seconds).", metricPrefix))
-	lines = append(lines, fmt.Sprintf("# TYPE %sduration_seconds gauge", metricPrefix))
-	lines = append(lines, fmt.Sprintf("%sduration_seconds %f", metricPrefix, probeDurationSeconds))
+	builder.WriteString("# HELP ")
+	builder.WriteString(metricPrefix)
+	builder.WriteString("duration_seconds Total duration of the ICMP probe (seconds).\n# TYPE ")
+	builder.WriteString(metricPrefix)
+	builder.WriteString("duration_seconds gauge\n")
+	builder.WriteString(metricPrefix)
+	builder.WriteString("duration_seconds ")
+	builder.WriteString(strconv.FormatFloat(probeDurationSeconds, 'f', 6, 64))
+	builder.WriteString("\n")
 
 	// ICMP durations
-	lines = append(lines, fmt.Sprintf("# HELP %sicmp_duration_seconds Duration of ICMP request by phase.", metricPrefix))
-	lines = append(lines, fmt.Sprintf("# TYPE %sicmp_duration_seconds gauge", metricPrefix))
+	builder.WriteString("# HELP ")
+	builder.WriteString(metricPrefix)
+	builder.WriteString("icmp_duration_seconds Duration of ICMP request by phase.\n# TYPE ")
+	builder.WriteString(metricPrefix)
+	builder.WriteString("icmp_duration_seconds gauge\n")
 	for phaseName, phaseValue := range icmpTimes {
-		lines = append(lines, fmt.Sprintf("%sicmp_duration_seconds{phase=\"%s\"} %f", metricPrefix, phaseName, phaseValue))
+		builder.WriteString(metricPrefix)
+		builder.WriteString("icmp_duration_seconds{phase=\"")
+		builder.WriteString(phaseName)
+		builder.WriteString("\"} ")
+		builder.WriteString(strconv.FormatFloat(phaseValue, 'f', 6, 64))
+		builder.WriteString("\n")
 	}
 
 	// TTL / hop limit from ping
-	lines = append(lines, fmt.Sprintf("# HELP %sicmp_reply_hop_limit Replied packet hop limit (IPv4 TTL).", metricPrefix))
-	lines = append(lines, fmt.Sprintf("# TYPE %sicmp_reply_hop_limit gauge", metricPrefix))
-	lines = append(lines, fmt.Sprintf("%sicmp_reply_hop_limit %f", metricPrefix, icmpReplyHopLimit))
+	builder.WriteString("# HELP ")
+	builder.WriteString(metricPrefix)
+	builder.WriteString("icmp_reply_hop_limit Replied packet hop limit (IPv4 TTL).\n# TYPE ")
+	builder.WriteString(metricPrefix)
+	builder.WriteString("icmp_reply_hop_limit gauge\n")
+	builder.WriteString(metricPrefix)
+	builder.WriteString("icmp_reply_hop_limit ")
+	builder.WriteString(strconv.FormatFloat(icmpReplyHopLimit, 'f', 6, 64))
+	builder.WriteString("\n")
 
 	// IP hash
-	lines = append(lines, fmt.Sprintf("# HELP %sip_addr_hash Hash of the resolved IP address.", metricPrefix))
-	lines = append(lines, fmt.Sprintf("# TYPE %sip_addr_hash gauge", metricPrefix))
-	lines = append(lines, fmt.Sprintf("%sip_addr_hash %d", metricPrefix, ipAddrHash))
+	builder.WriteString("# HELP ")
+	builder.WriteString(metricPrefix)
+	builder.WriteString("ip_addr_hash Hash of the resolved IP address.\n# TYPE ")
+	builder.WriteString(metricPrefix)
+	builder.WriteString("ip_addr_hash gauge\n")
+	builder.WriteString(metricPrefix)
+	builder.WriteString("ip_addr_hash ")
+	builder.WriteString(strconv.FormatUint(uint64(ipAddrHash), 10))
+	builder.WriteString("\n")
 
 	// IP protocol
-	lines = append(lines, fmt.Sprintf("# HELP %sip_protocol IP protocol version (4 or 6).", metricPrefix))
-	lines = append(lines, fmt.Sprintf("# TYPE %sip_protocol gauge", metricPrefix))
-	lines = append(lines, fmt.Sprintf("%sip_protocol %d", metricPrefix, ipProtocol))
+	builder.WriteString("# HELP ")
+	builder.WriteString(metricPrefix)
+	builder.WriteString("ip_protocol IP protocol version (4 or 6).\n# TYPE ")
+	builder.WriteString(metricPrefix)
+	builder.WriteString("ip_protocol gauge\n")
+	builder.WriteString(metricPrefix)
+	builder.WriteString("ip_protocol ")
+	builder.WriteString(strconv.Itoa(ipProtocol))
+	builder.WriteString("\n")
 
 	// Success
-	lines = append(lines, fmt.Sprintf("# HELP %ssuccess Whether the probe was successful (1 = OK, 0 = fail).", metricPrefix))
-	lines = append(lines, fmt.Sprintf("# TYPE %ssuccess gauge", metricPrefix))
-	lines = append(lines, fmt.Sprintf("%ssuccess %d", metricPrefix, icmpSuccess))
+	builder.WriteString("# HELP ")
+	builder.WriteString(metricPrefix)
+	builder.WriteString("success Whether the probe was successful (1 = OK, 0 = fail).\n# TYPE ")
+	builder.WriteString(metricPrefix)
+	builder.WriteString("success gauge\n")
+	builder.WriteString(metricPrefix)
+	builder.WriteString("success ")
+	builder.WriteString(strconv.Itoa(icmpSuccess))
+	builder.WriteString("\n")
 
-	// MTR hops
+	// MTR hops (currently disabled but code ready)
 	for _, hop := range mtrHops {
-		lines = append(lines, fmt.Sprintf("%smtr_hop_loss{hop=\"%d\",host=\"%s\"} %f", metricPrefix, hop.Hop, hop.Host, hop.Loss))
-		lines = append(lines, fmt.Sprintf("%smtr_hop_avg_latency{hop=\"%d\",host=\"%s\"} %f", metricPrefix, hop.Hop, hop.Host, hop.Avg))
-		lines = append(lines, fmt.Sprintf("%smtr_hop_best_latency{hop=\"%d\",host=\"%s\"} %f", metricPrefix, hop.Hop, hop.Host, hop.Best))
-		lines = append(lines, fmt.Sprintf("%smtr_hop_worst_latency{hop=\"%d\",host=\"%s\"} %f", metricPrefix, hop.Hop, hop.Host, hop.Wrst))
-		lines = append(lines, fmt.Sprintf("%smtr_hop_stdev_latency{hop=\"%d\",host=\"%s\"} %f", metricPrefix, hop.Hop, hop.Host, hop.StDev))
+		builder.WriteString(metricPrefix)
+		builder.WriteString("mtr_hop_loss{hop=\"")
+		builder.WriteString(strconv.Itoa(hop.Hop))
+		builder.WriteString("\",host=\"")
+		builder.WriteString(hop.Host)
+		builder.WriteString("\"} ")
+		builder.WriteString(strconv.FormatFloat(hop.Loss, 'f', 6, 64))
+		builder.WriteString("\n")
+		
+		builder.WriteString(metricPrefix)
+		builder.WriteString("mtr_hop_avg_latency{hop=\"")
+		builder.WriteString(strconv.Itoa(hop.Hop))
+		builder.WriteString("\",host=\"")
+		builder.WriteString(hop.Host)
+		builder.WriteString("\"} ")
+		builder.WriteString(strconv.FormatFloat(hop.Avg, 'f', 6, 64))
+		builder.WriteString("\n")
+		
+		builder.WriteString(metricPrefix)
+		builder.WriteString("mtr_hop_best_latency{hop=\"")
+		builder.WriteString(strconv.Itoa(hop.Hop))
+		builder.WriteString("\",host=\"")
+		builder.WriteString(hop.Host)
+		builder.WriteString("\"} ")
+		builder.WriteString(strconv.FormatFloat(hop.Best, 'f', 6, 64))
+		builder.WriteString("\n")
+		
+		builder.WriteString(metricPrefix)
+		builder.WriteString("mtr_hop_worst_latency{hop=\"")
+		builder.WriteString(strconv.Itoa(hop.Hop))
+		builder.WriteString("\",host=\"")
+		builder.WriteString(hop.Host)
+		builder.WriteString("\"} ")
+		builder.WriteString(strconv.FormatFloat(hop.Wrst, 'f', 6, 64))
+		builder.WriteString("\n")
+		
+		builder.WriteString(metricPrefix)
+		builder.WriteString("mtr_hop_stdev_latency{hop=\"")
+		builder.WriteString(strconv.Itoa(hop.Hop))
+		builder.WriteString("\",host=\"")
+		builder.WriteString(hop.Host)
+		builder.WriteString("\"} ")
+		builder.WriteString(strconv.FormatFloat(hop.StDev, 'f', 6, 64))
+		builder.WriteString("\n")
 	}
 
-	return strings.Join(lines, "\n") + "\n", nil
+	return builder.String(), nil
 }
 
 // runPing runs a single ICMP ping using 'ping' command with context timeout

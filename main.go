@@ -46,11 +46,13 @@ func main() {
 	srv := &http.Server{
 		Addr:         ":" + port,
 		Handler:      r,
-		ReadTimeout:  30 * time.Second,
-		WriteTimeout: 30 * time.Second,
-		IdleTimeout:  60 * time.Second,
+		ReadTimeout:  20 * time.Second,
+		WriteTimeout: 20 * time.Second,
+		IdleTimeout:  30 * time.Second,
 		// Disable HTTP/2 to fix concurrency issues
 		TLSNextProto: make(map[string]func(*http.Server, *tls.Conn, http.Handler)),
+		// Optimize for high concurrency
+		MaxHeaderBytes: 1 << 16, // 64KB
 	}
 
 	// Check SSL configuration from web_config.yml
@@ -77,8 +79,8 @@ func healthHandler(w http.ResponseWriter, r *http.Request) {
 
 // probeHandler handles /probe endpoint
 func probeHandler(w http.ResponseWriter, r *http.Request) {
-	// Add request timeout to prevent goroutine leaks
-	ctx, cancel := context.WithTimeout(r.Context(), 30*time.Second)
+	// Add aggressive request timeout to prevent goroutine leaks
+	ctx, cancel := context.WithTimeout(r.Context(), 15*time.Second)
 	defer cancel()
 	
 	module := r.URL.Query().Get("module")
@@ -89,7 +91,8 @@ func probeHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	w.Header().Set("Content-Type", "text/plain")
+	w.Header().Set("Content-Type", "text/plain; charset=utf-8")
+	w.Header().Set("Cache-Control", "no-cache")
 
 	switch module {
 	case "icmp":

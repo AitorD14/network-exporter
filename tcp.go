@@ -26,9 +26,10 @@ func tcpProbe(ctx context.Context, target string) (string, error) {
 		return buildTCPFailResponse(metricPrefix, target, fmt.Errorf("invalid port: %s", portStr)), nil
 	}
 
-	// DNS resolution timing
+	// DNS resolution timing with context
 	startDNS := time.Now()
-	ips, err := net.LookupIP(host)
+	resolver := &net.Resolver{}
+	ips, err := resolver.LookupIPAddr(ctx, host)
 	if err != nil {
 		return buildTCPFailResponse(metricPrefix, target, err), nil
 	}
@@ -40,17 +41,18 @@ func tcpProbe(ctx context.Context, target string) (string, error) {
 	}
 
 	// IP details
-	ipAddress := ips[0].String()
+	ipAddress := ips[0].IP.String()
 	ipProtocol := 4
-	if ips[0].To4() == nil {
+	if ips[0].IP.To4() == nil {
 		ipProtocol = 6
 	}
 	ipAddrHash := hashIP(ipAddress)
 
-	// TCP connection timing
+	// TCP connection timing with context
 	startConnect := time.Now()
 	address := net.JoinHostPort(ipAddress, portStr)
-	conn, err := net.DialTimeout("tcp", address, 15*time.Second)
+	d := &net.Dialer{Timeout: 10 * time.Second}
+	conn, err := d.DialContext(ctx, "tcp", address)
 	endConnect := time.Now()
 	connectDuration := endConnect.Sub(startConnect).Seconds()
 
@@ -93,54 +95,103 @@ func tcpProbe(ctx context.Context, target string) (string, error) {
 	endProbe := time.Now()
 	probeDurationSeconds := endProbe.Sub(startTime).Seconds()
 
-	// Build Prometheus lines
-	var lines []string
+	// Build Prometheus lines efficiently
+	var builder strings.Builder
+	builder.Grow(1024) // Pre-allocate capacity
 
 	// DNS metric
-	lines = append(lines, fmt.Sprintf("# HELP %stcp_dns_lookup_time_seconds Time spent resolving DNS.", metricPrefix))
-	lines = append(lines, fmt.Sprintf("# TYPE %stcp_dns_lookup_time_seconds gauge", metricPrefix))
-	lines = append(lines, fmt.Sprintf("%stcp_dns_lookup_time_seconds %f", metricPrefix, dnsLookupTime))
+	builder.WriteString("# HELP ")
+	builder.WriteString(metricPrefix)
+	builder.WriteString("tcp_dns_lookup_time_seconds Time spent resolving DNS.\n# TYPE ")
+	builder.WriteString(metricPrefix)
+	builder.WriteString("tcp_dns_lookup_time_seconds gauge\n")
+	builder.WriteString(metricPrefix)
+	builder.WriteString("tcp_dns_lookup_time_seconds ")
+	builder.WriteString(strconv.FormatFloat(dnsLookupTime, 'f', 6, 64))
+	builder.WriteString("\n")
 
 	// Total probe duration
-	lines = append(lines, fmt.Sprintf("# HELP %stcp_duration_seconds Total duration of the TCP probe (seconds).", metricPrefix))
-	lines = append(lines, fmt.Sprintf("# TYPE %stcp_duration_seconds gauge", metricPrefix))
-	lines = append(lines, fmt.Sprintf("%stcp_duration_seconds %f", metricPrefix, probeDurationSeconds))
+	builder.WriteString("# HELP ")
+	builder.WriteString(metricPrefix)
+	builder.WriteString("tcp_duration_seconds Total duration of the TCP probe (seconds).\n# TYPE ")
+	builder.WriteString(metricPrefix)
+	builder.WriteString("tcp_duration_seconds gauge\n")
+	builder.WriteString(metricPrefix)
+	builder.WriteString("tcp_duration_seconds ")
+	builder.WriteString(strconv.FormatFloat(probeDurationSeconds, 'f', 6, 64))
+	builder.WriteString("\n")
 
 	// TCP connection duration
-	lines = append(lines, fmt.Sprintf("# HELP %stcp_connect_duration_seconds Duration of TCP connection establishment.", metricPrefix))
-	lines = append(lines, fmt.Sprintf("# TYPE %stcp_connect_duration_seconds gauge", metricPrefix))
-	lines = append(lines, fmt.Sprintf("%stcp_connect_duration_seconds %f", metricPrefix, connectDuration))
+	builder.WriteString("# HELP ")
+	builder.WriteString(metricPrefix)
+	builder.WriteString("tcp_connect_duration_seconds Duration of TCP connection establishment.\n# TYPE ")
+	builder.WriteString(metricPrefix)
+	builder.WriteString("tcp_connect_duration_seconds gauge\n")
+	builder.WriteString(metricPrefix)
+	builder.WriteString("tcp_connect_duration_seconds ")
+	builder.WriteString(strconv.FormatFloat(connectDuration, 'f', 6, 64))
+	builder.WriteString("\n")
 
 	// TLS handshake duration (if applicable)
 	if tlsHandshakeDuration > 0 {
-		lines = append(lines, fmt.Sprintf("# HELP %stcp_tls_handshake_duration_seconds Duration of TLS handshake.", metricPrefix))
-		lines = append(lines, fmt.Sprintf("# TYPE %stcp_tls_handshake_duration_seconds gauge", metricPrefix))
-		lines = append(lines, fmt.Sprintf("%stcp_tls_handshake_duration_seconds %f", metricPrefix, tlsHandshakeDuration))
+		builder.WriteString("# HELP ")
+		builder.WriteString(metricPrefix)
+		builder.WriteString("tcp_tls_handshake_duration_seconds Duration of TLS handshake.\n# TYPE ")
+		builder.WriteString(metricPrefix)
+		builder.WriteString("tcp_tls_handshake_duration_seconds gauge\n")
+		builder.WriteString(metricPrefix)
+		builder.WriteString("tcp_tls_handshake_duration_seconds ")
+		builder.WriteString(strconv.FormatFloat(tlsHandshakeDuration, 'f', 6, 64))
+		builder.WriteString("\n")
 	}
 
 	// IP hash
-	lines = append(lines, fmt.Sprintf("# HELP %sip_addr_hash Hash of the resolved IP address.", metricPrefix))
-	lines = append(lines, fmt.Sprintf("# TYPE %sip_addr_hash gauge", metricPrefix))
-	lines = append(lines, fmt.Sprintf("%sip_addr_hash %d", metricPrefix, ipAddrHash))
+	builder.WriteString("# HELP ")
+	builder.WriteString(metricPrefix)
+	builder.WriteString("ip_addr_hash Hash of the resolved IP address.\n# TYPE ")
+	builder.WriteString(metricPrefix)
+	builder.WriteString("ip_addr_hash gauge\n")
+	builder.WriteString(metricPrefix)
+	builder.WriteString("ip_addr_hash ")
+	builder.WriteString(strconv.FormatUint(uint64(ipAddrHash), 10))
+	builder.WriteString("\n")
 
 	// IP protocol
-	lines = append(lines, fmt.Sprintf("# HELP %sip_protocol IP protocol version (4 or 6).", metricPrefix))
-	lines = append(lines, fmt.Sprintf("# TYPE %sip_protocol gauge", metricPrefix))
-	lines = append(lines, fmt.Sprintf("%sip_protocol %d", metricPrefix, ipProtocol))
+	builder.WriteString("# HELP ")
+	builder.WriteString(metricPrefix)
+	builder.WriteString("ip_protocol IP protocol version (4 or 6).\n# TYPE ")
+	builder.WriteString(metricPrefix)
+	builder.WriteString("ip_protocol gauge\n")
+	builder.WriteString(metricPrefix)
+	builder.WriteString("ip_protocol ")
+	builder.WriteString(strconv.Itoa(ipProtocol))
+	builder.WriteString("\n")
 
 	// SSL certificate expiry (if applicable)
 	if sslEarliestCertExpiry > 0 {
-		lines = append(lines, fmt.Sprintf("# HELP %stcp_ssl_earliest_cert_expiry SSL certificate expiry timestamp.", metricPrefix))
-		lines = append(lines, fmt.Sprintf("# TYPE %stcp_ssl_earliest_cert_expiry gauge", metricPrefix))
-		lines = append(lines, fmt.Sprintf("%stcp_ssl_earliest_cert_expiry %f", metricPrefix, sslEarliestCertExpiry))
+		builder.WriteString("# HELP ")
+		builder.WriteString(metricPrefix)
+		builder.WriteString("tcp_ssl_earliest_cert_expiry SSL certificate expiry timestamp.\n# TYPE ")
+		builder.WriteString(metricPrefix)
+		builder.WriteString("tcp_ssl_earliest_cert_expiry gauge\n")
+		builder.WriteString(metricPrefix)
+		builder.WriteString("tcp_ssl_earliest_cert_expiry ")
+		builder.WriteString(strconv.FormatFloat(sslEarliestCertExpiry, 'f', 6, 64))
+		builder.WriteString("\n")
 	}
 
 	// Success
-	lines = append(lines, fmt.Sprintf("# HELP %sprobe_success Whether the probe was successful (1 = OK, 0 = fail).", metricPrefix))
-	lines = append(lines, fmt.Sprintf("# TYPE %sprobe_success gauge", metricPrefix))
-	lines = append(lines, fmt.Sprintf("%sprobe_success %d", metricPrefix, success))
+	builder.WriteString("# HELP ")
+	builder.WriteString(metricPrefix)
+	builder.WriteString("probe_success Whether the probe was successful (1 = OK, 0 = fail).\n# TYPE ")
+	builder.WriteString(metricPrefix)
+	builder.WriteString("probe_success gauge\n")
+	builder.WriteString(metricPrefix)
+	builder.WriteString("probe_success ")
+	builder.WriteString(strconv.Itoa(success))
+	builder.WriteString("\n")
 
-	return strings.Join(lines, "\n") + "\n", nil
+	return builder.String(), nil
 }
 
 // buildTCPFailResponse returns minimal Prometheus metrics with success=0
