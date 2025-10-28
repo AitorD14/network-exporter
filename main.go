@@ -20,12 +20,18 @@ func main() {
 		log.Println("DEBUG mode is OFF (INFO level).")
 	}
 
+	// Load web configuration
+	webConfig, err := LoadWebConfig("")
+	if err != nil {
+		log.Fatalf("Failed to load web config: %v", err)
+	}
+
 	// Create router
 	r := mux.NewRouter()
 
 	// Add basic auth middleware to all routes except health
 	r.HandleFunc("/health", healthHandler).Methods("GET")
-	r.HandleFunc("/probe", basicAuth(probeHandler)).Methods("GET")
+	r.HandleFunc("/probe", basicAuthWithConfig(webConfig, probeHandler)).Methods("GET")
 
 	// Server configuration
 	port := os.Getenv("PORT")
@@ -41,13 +47,13 @@ func main() {
 		IdleTimeout:  60 * time.Second,
 	}
 
-	// Check if SSL certificates exist
-	certFile := "/etc/network_exporter/cert.pem"
-	keyFile := "/etc/network_exporter/key.pem"
+	// Check SSL configuration from web_config.yml
+	certFile, keyFile := webConfig.GetSSLPaths()
 	
 	if _, err := os.Stat(certFile); err == nil {
 		if _, err := os.Stat(keyFile); err == nil {
 			log.Printf("Starting Network Exporter with HTTPS on port %s", port)
+			log.Printf("Using SSL cert: %s, key: %s", certFile, keyFile)
 			log.Fatal(srv.ListenAndServeTLS(certFile, keyFile))
 		}
 	}
@@ -109,10 +115,9 @@ func probeHandler(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
-// basicAuth provides basic authentication middleware
-func basicAuth(next http.HandlerFunc) http.HandlerFunc {
+// basicAuthWithConfig provides basic authentication middleware using web config
+func basicAuthWithConfig(webConfig *WebConfig, next http.HandlerFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		// Read credentials from file (like Python version)
 		username, password, ok := r.BasicAuth()
 		if !ok {
 			w.Header().Set("WWW-Authenticate", `Basic realm="Network Exporter"`)
@@ -120,13 +125,18 @@ func basicAuth(next http.HandlerFunc) http.HandlerFunc {
 			return
 		}
 
-		// Expected credentials (same as Python version)
-		expectedUsername := "network_exporter"
-		expectedPassword := "monitoring123" // Default password, should read from htpasswd file
+		// Get expected credentials from web config
+		users := webConfig.GetBasicAuthUsers()
+		expectedPassword, userExists := users[username]
+		
+		if !userExists {
+			w.Header().Set("WWW-Authenticate", `Basic realm="Network Exporter"`)
+			http.Error(w, "Unauthorized", http.StatusUnauthorized)
+			return
+		}
 
 		// Use subtle.ConstantTimeCompare to prevent timing attacks
-		if subtle.ConstantTimeCompare([]byte(username), []byte(expectedUsername)) != 1 ||
-			subtle.ConstantTimeCompare([]byte(password), []byte(expectedPassword)) != 1 {
+		if subtle.ConstantTimeCompare([]byte(password), []byte(expectedPassword)) != 1 {
 			w.Header().Set("WWW-Authenticate", `Basic realm="Network Exporter"`)
 			http.Error(w, "Unauthorized", http.StatusUnauthorized)
 			return
