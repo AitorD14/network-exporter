@@ -192,12 +192,12 @@ func runMTRJSON(ipAddress string) ([]MTRHop, error) {
 		return nil, fmt.Errorf("MTR queue timeout - too many concurrent requests")
 	}
 
-	// Create context with timeout
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	// Create context with shorter timeout
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
-	// Reduced hops for better performance: -m 15 instead of 30
-	cmd := exec.CommandContext(ctx, "mtr", "--json", "-c", "1", "-i", "0.1", "-m", "15", ipAddress)
+	// Optimized for speed: fewer hops, faster interval
+	cmd := exec.CommandContext(ctx, "mtr", "--json", "-c", "1", "-i", "0.05", "-m", "10", ipAddress)
 	output, err := cmd.Output()
 	if err != nil {
 		return nil, err
