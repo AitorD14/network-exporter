@@ -5,6 +5,7 @@ import (
 	"crypto/subtle"
 	"crypto/tls"
 	"fmt"
+	"io"
 	"log"
 	"net/http"
 	"os"
@@ -40,19 +41,27 @@ func main() {
 	// Server configuration
 	port := os.Getenv("PORT")
 	if port == "" {
-		port = "9116"
+		port = "9115"
 	}
 
 	srv := &http.Server{
 		Addr:         ":" + port,
 		Handler:      r,
-		ReadTimeout:  20 * time.Second,
-		WriteTimeout: 20 * time.Second,
-		IdleTimeout:  30 * time.Second,
+		ReadTimeout:  10 * time.Second,
+		WriteTimeout: 10 * time.Second,
+		IdleTimeout:  15 * time.Second,
 		// Disable HTTP/2 to fix concurrency issues
 		TLSNextProto: make(map[string]func(*http.Server, *tls.Conn, http.Handler)),
 		// Optimize for high concurrency
 		MaxHeaderBytes: 1 << 16, // 64KB
+		// Reduce TLS handshake timeout to fail fast
+		TLSConfig: &tls.Config{
+			ReadTimeout:       5 * time.Second,
+			WriteTimeout:      5 * time.Second,
+			HandshakeTimeout:  3 * time.Second,
+		},
+		// Suppress TLS error logging
+		ErrorLog: log.New(io.Discard, "", 0),
 	}
 
 	// Check SSL configuration from web_config.yml
