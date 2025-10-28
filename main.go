@@ -11,11 +11,41 @@ import (
 	_ "net/http/pprof"
 	"os"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/gorilla/mux"
 	"golang.org/x/crypto/bcrypt"
 )
+
+// Auth cache to avoid expensive bcrypt on every request
+type AuthCache struct {
+	cache map[string]time.Time
+	mutex sync.RWMutex
+}
+
+var authCache = &AuthCache{
+	cache: make(map[string]time.Time),
+}
+
+func (ac *AuthCache) isValid(username, password string) bool {
+	key := username + ":" + password
+	ac.mutex.RLock()
+	validUntil, exists := ac.cache[key]
+	ac.mutex.RUnlock()
+	
+	if exists && time.Now().Before(validUntil) {
+		return true
+	}
+	return false
+}
+
+func (ac *AuthCache) add(username, password string) {
+	key := username + ":" + password
+	ac.mutex.Lock()
+	ac.cache[key] = time.Now().Add(30 * time.Second) // Cache for 30 seconds
+	ac.mutex.Unlock()
+}
 
 func main() {
 	// Determine if DEBUG is enabled via environment variable
@@ -154,6 +184,12 @@ func basicAuthWithConfig(webConfig *WebConfig, next http.HandlerFunc) http.Handl
 			return
 		}
 
+		// Check auth cache first to avoid expensive bcrypt
+		if authCache.isValid(username, password) {
+			next(w, r)
+			return
+		}
+
 		// Get expected credentials from web config
 		users := webConfig.GetBasicAuthUsers()
 		expectedPassword, userExists := users[username]
@@ -180,6 +216,9 @@ func basicAuthWithConfig(webConfig *WebConfig, next http.HandlerFunc) http.Handl
 			http.Error(w, "Unauthorized", http.StatusUnauthorized)
 			return
 		}
+
+		// Add to cache if auth succeeded
+		authCache.add(username, password)
 
 		next(w, r)
 	}
