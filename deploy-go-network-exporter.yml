@@ -4,10 +4,9 @@
   become: true
   serial: 1
   vars:
-    github_token_clone: "{{ vault_github_token }}"
-    repo_url: "https://marciglesias17:{{ github_token_clone }}@github.com/CubePathInc/prometheus-network-exporter.git"
+    repo_url: "https://github.com/AitorD14/network-exporter.git"
     remote_deploy_dir: "/opt/go_network_exporter"
-    repo_branch: "feature/tcp-and-http4xx-modules"
+    repo_branch: "main"
     exporter_port: 9115
     exporter_user: "network-exporter"
     exporter_group: "network-exporter"
@@ -78,6 +77,50 @@
         createhome: false
         state: present
 
+    - name: Create network_exporter configuration directory
+      file:
+        path: /etc/network_exporter
+        state: directory
+        owner: root
+        group: root
+        mode: '0755'
+
+    - name: Copy SSL certificate (if exists)
+      copy:
+        src: blackbox_exporter/cert.pem
+        dest: /etc/network_exporter/cert.pem
+        owner: root
+        group: root
+        mode: '0644'
+      ignore_errors: yes
+
+    - name: Copy SSL private key (if exists)
+      copy:
+        src: blackbox_exporter/key.pem
+        dest: /etc/network_exporter/key.pem
+        owner: root
+        group: root
+        mode: '0600'
+      ignore_errors: yes
+
+    - name: Create web config file (Blackbox compatible)
+      copy:
+        dest: /etc/network_exporter/web_config.yml
+        content: |
+          tls_server_config:
+            cert_file: /etc/network_exporter/cert.pem
+            key_file: /etc/network_exporter/key.pem
+          
+          http_server_config:
+            headers:
+              Strict-Transport-Security: "max-age=63072000; includeSubDomains; preload"
+          
+          basic_auth_users:
+            blackbox_exporter: "$2b$12$a6UYVV8RqNLU2E3yZhfWn.01DBG6SDdy32IkbD.8hpSE0780XlXF6"
+        owner: "{{ exporter_user }}"
+        group: "{{ exporter_group }}"
+        mode: '0640'
+
     - name: Remove existing repository directory
       file:
         path: "{{ remote_deploy_dir }}"
@@ -92,7 +135,7 @@
 
     - name: Build Go binary
       shell: |
-        cd {{ remote_deploy_dir }}/go-network-exporter
+        cd {{ remote_deploy_dir }}
         /usr/local/go/bin/go mod tidy
         CGO_ENABLED=0 /usr/local/go/bin/go build -a -ldflags '-extldflags "-static"' -o network-exporter .
       environment:
@@ -101,7 +144,7 @@
 
     - name: Set binary capabilities for ping/MTR
       shell: |
-        setcap cap_net_raw+ep {{ remote_deploy_dir }}/go-network-exporter/network-exporter
+        setcap cap_net_raw+ep {{ remote_deploy_dir }}/network-exporter
       become: yes
 
     - name: Set ownership of deployment directory
@@ -114,7 +157,7 @@
 
     - name: Make binary executable
       file:
-        path: "{{ remote_deploy_dir }}/go-network-exporter/network-exporter"
+        path: "{{ remote_deploy_dir }}/network-exporter"
         mode: '0755'
 
     - name: Create systemd service file
@@ -128,9 +171,9 @@
           Type=simple
           User=root
           Group=root
-          WorkingDirectory={{ remote_deploy_dir }}/go-network-exporter
+          WorkingDirectory={{ remote_deploy_dir }}
           Environment="PORT={{ exporter_port }}"
-          ExecStart={{ remote_deploy_dir }}/go-network-exporter/network-exporter
+          ExecStart={{ remote_deploy_dir }}/network-exporter
           Restart=always
           RestartSec=5
           StandardOutput=journal
@@ -149,7 +192,7 @@
         mode: '0644'
       notify:
         - reload systemd
-        - restart go network exporter
+        - restart network exporter
 
     - name: Start and enable Go network exporter service
       systemd:

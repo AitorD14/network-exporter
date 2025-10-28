@@ -6,9 +6,11 @@ import (
 	"log"
 	"net/http"
 	"os"
+	"strings"
 	"time"
 
 	"github.com/gorilla/mux"
+	"golang.org/x/crypto/bcrypt"
 )
 
 func main() {
@@ -135,8 +137,18 @@ func basicAuthWithConfig(webConfig *WebConfig, next http.HandlerFunc) http.Handl
 			return
 		}
 
-		// Use subtle.ConstantTimeCompare to prevent timing attacks
-		if subtle.ConstantTimeCompare([]byte(password), []byte(expectedPassword)) != 1 {
+		// Check if password is bcrypt hash or plain text
+		var passwordMatch bool
+		if strings.HasPrefix(expectedPassword, "$2b$") || strings.HasPrefix(expectedPassword, "$2a$") {
+			// Bcrypt hash - use bcrypt.CompareHashAndPassword
+			err := bcrypt.CompareHashAndPassword([]byte(expectedPassword), []byte(password))
+			passwordMatch = (err == nil)
+		} else {
+			// Plain text password - use constant time compare
+			passwordMatch = (subtle.ConstantTimeCompare([]byte(password), []byte(expectedPassword)) == 1)
+		}
+
+		if !passwordMatch {
 			w.Header().Set("WWW-Authenticate", `Basic realm="Network Exporter"`)
 			http.Error(w, "Unauthorized", http.StatusUnauthorized)
 			return
