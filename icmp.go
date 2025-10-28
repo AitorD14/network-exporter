@@ -98,11 +98,11 @@ func icmpProbe(target string) (string, error) {
 
 	// MTR hops
 	for _, hop := range mtrHops {
-		lines = append(lines, fmt.Sprintf("%smtr_hop_loss{hop=\"%s\",host=\"%s\"} %f", metricPrefix, hop.Hop, hop.Host, hop.Loss))
-		lines = append(lines, fmt.Sprintf("%smtr_hop_avg_latency{hop=\"%s\",host=\"%s\"} %f", metricPrefix, hop.Hop, hop.Host, hop.Avg))
-		lines = append(lines, fmt.Sprintf("%smtr_hop_best_latency{hop=\"%s\",host=\"%s\"} %f", metricPrefix, hop.Hop, hop.Host, hop.Best))
-		lines = append(lines, fmt.Sprintf("%smtr_hop_worst_latency{hop=\"%s\",host=\"%s\"} %f", metricPrefix, hop.Hop, hop.Host, hop.Wrst))
-		lines = append(lines, fmt.Sprintf("%smtr_hop_stdev_latency{hop=\"%s\",host=\"%s\"} %f", metricPrefix, hop.Hop, hop.Host, hop.StDev))
+		lines = append(lines, fmt.Sprintf("%smtr_hop_loss{hop=\"%d\",host=\"%s\"} %f", metricPrefix, hop.Hop, hop.Host, hop.Loss))
+		lines = append(lines, fmt.Sprintf("%smtr_hop_avg_latency{hop=\"%d\",host=\"%s\"} %f", metricPrefix, hop.Hop, hop.Host, hop.Avg))
+		lines = append(lines, fmt.Sprintf("%smtr_hop_best_latency{hop=\"%d\",host=\"%s\"} %f", metricPrefix, hop.Hop, hop.Host, hop.Best))
+		lines = append(lines, fmt.Sprintf("%smtr_hop_worst_latency{hop=\"%d\",host=\"%s\"} %f", metricPrefix, hop.Hop, hop.Host, hop.Wrst))
+		lines = append(lines, fmt.Sprintf("%smtr_hop_stdev_latency{hop=\"%d\",host=\"%s\"} %f", metricPrefix, hop.Hop, hop.Host, hop.StDev))
 	}
 
 	return strings.Join(lines, "\n") + "\n", nil
@@ -146,7 +146,7 @@ func runPing(ipAddress string) (int, float64, map[string]float64, error) {
 
 // MTRHop represents a single hop in MTR output
 type MTRHop struct {
-	Hop   string  `json:"count"`
+	Hop   int     `json:"count"`
 	Host  string  `json:"host"`
 	Loss  float64 `json:"Loss%"`
 	Avg   float64 `json:"Avg"`
@@ -178,7 +178,7 @@ func runMTRJSON(ipAddress string) ([]MTRHop, error) {
 	var result []MTRHop
 	for _, hub := range mtrReport.Report.Hubs {
 		result = append(result, MTRHop{
-			Hop:   strconv.Itoa(int(hub.Loss)), // Using Loss as count temporarily
+			Hop:   hub.Hop, // This maps to "count" field in JSON
 			Host:  hub.Host,
 			Loss:  hub.Loss,
 			Avg:   hub.Avg,
