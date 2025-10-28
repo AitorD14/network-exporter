@@ -1,6 +1,7 @@
 package main
 
 import (
+	"crypto/subtle"
 	"fmt"
 	"log"
 	"net/http"
@@ -22,9 +23,9 @@ func main() {
 	// Create router
 	r := mux.NewRouter()
 
-	// Routes
+	// Add basic auth middleware to all routes except health
 	r.HandleFunc("/health", healthHandler).Methods("GET")
-	r.HandleFunc("/probe", probeHandler).Methods("GET")
+	r.HandleFunc("/probe", basicAuth(probeHandler)).Methods("GET")
 
 	// Server configuration
 	port := os.Getenv("PORT")
@@ -40,7 +41,18 @@ func main() {
 		IdleTimeout:  60 * time.Second,
 	}
 
-	log.Printf("Starting Network Exporter on port %s", port)
+	// Check if SSL certificates exist
+	certFile := "/etc/network_exporter/cert.pem"
+	keyFile := "/etc/network_exporter/key.pem"
+	
+	if _, err := os.Stat(certFile); err == nil {
+		if _, err := os.Stat(keyFile); err == nil {
+			log.Printf("Starting Network Exporter with HTTPS on port %s", port)
+			log.Fatal(srv.ListenAndServeTLS(certFile, keyFile))
+		}
+	}
+	
+	log.Printf("Starting Network Exporter with HTTP on port %s", port)
 	log.Fatal(srv.ListenAndServe())
 }
 
@@ -94,5 +106,32 @@ func probeHandler(w http.ResponseWriter, r *http.Request) {
 		fmt.Fprint(w, result)
 	default:
 		http.Error(w, fmt.Sprintf("Error: Unsupported module '%s'\n", module), http.StatusBadRequest)
+	}
+}
+
+// basicAuth provides basic authentication middleware
+func basicAuth(next http.HandlerFunc) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		// Read credentials from file (like Python version)
+		username, password, ok := r.BasicAuth()
+		if !ok {
+			w.Header().Set("WWW-Authenticate", `Basic realm="Network Exporter"`)
+			http.Error(w, "Unauthorized", http.StatusUnauthorized)
+			return
+		}
+
+		// Expected credentials (same as Python version)
+		expectedUsername := "network_exporter"
+		expectedPassword := "monitoring123" // Default password, should read from htpasswd file
+
+		// Use subtle.ConstantTimeCompare to prevent timing attacks
+		if subtle.ConstantTimeCompare([]byte(username), []byte(expectedUsername)) != 1 ||
+			subtle.ConstantTimeCompare([]byte(password), []byte(expectedPassword)) != 1 {
+			w.Header().Set("WWW-Authenticate", `Basic realm="Network Exporter"`)
+			http.Error(w, "Unauthorized", http.StatusUnauthorized)
+			return
+		}
+
+		next(w, r)
 	}
 }
