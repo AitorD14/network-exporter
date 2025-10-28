@@ -173,7 +173,7 @@
           Group=root
           WorkingDirectory={{ remote_deploy_dir }}
           Environment="PORT={{ exporter_port }}"
-          Environment="DEBUG=true"
+          # Environment="DEBUG=true"  # Uncomment for debugging
           ExecStart={{ remote_deploy_dir }}/network-exporter
           Restart=always
           RestartSec=5

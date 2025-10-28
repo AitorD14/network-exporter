@@ -65,13 +65,15 @@ func icmpProbe(ctx context.Context, target string) (string, error) {
 	// Store DNS time in the icmp_times for convenience
 	icmpTimes["resolve"] = dnsLookupTime
 
-	// 3) MTR - TEMPORARILY DISABLED FOR CPU TESTING
-	// mtrHops, err := runMTRJSON(ipAddress)
-	// if err != nil {
-	// 	// If MTR fails, continue without MTR data
-	// 	mtrHops = []MTRHop{}
-	// }
-	mtrHops := []MTRHop{} // Skip MTR temporarily to test CPU usage
+	// 3) MTR - Network path tracing
+	mtrHops, err := runMTRJSON(ipAddress)
+	if err != nil {
+		// If MTR fails, continue without MTR data
+		if os.Getenv("DEBUG") == "true" || os.Getenv("DEBUG") == "1" {
+			log.Printf("DEBUG: MTR failed for %s: %v", ipAddress, err)
+		}
+		mtrHops = []MTRHop{}
+	}
 
 	// 4) Calculate total duration
 	endProbe := time.Now()

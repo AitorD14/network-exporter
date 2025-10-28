@@ -90,8 +90,11 @@ func main() {
 	r.HandleFunc("/health", healthHandler).Methods("GET")
 	r.HandleFunc("/probe", basicAuthWithConfig(webConfig, probeHandler)).Methods("GET")
 	
-	// Add debug profiling routes (ALWAYS enabled to debug CPU issue)
-	r.PathPrefix("/debug/pprof/").Handler(http.DefaultServeMux)
+	// Add debug profiling routes (only in debug mode)
+	if debug == "true" || debug == "1" {
+		r.PathPrefix("/debug/pprof/").Handler(http.DefaultServeMux)
+		log.Println("DEBUG: Profiling endpoints enabled at /debug/pprof/")
+	}
 
 	// Server configuration
 	port := os.Getenv("PORT")
@@ -113,8 +116,13 @@ func main() {
 		TLSConfig: &tls.Config{
 			MinVersion: tls.VersionTLS12,
 		},
-		// Suppress TLS error logging
-		ErrorLog: log.New(io.Discard, "", 0),
+		// Only suppress TLS error logging in production (non-debug)
+		ErrorLog: func() *log.Logger {
+			if debug == "true" || debug == "1" {
+				return nil // Use default logger in debug mode
+			}
+			return log.New(io.Discard, "", 0) // Suppress in production
+		}(),
 	}
 
 	// Check SSL configuration from web_config.yml
