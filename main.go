@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"crypto/subtle"
 	"crypto/tls"
 	"fmt"
@@ -76,6 +77,10 @@ func healthHandler(w http.ResponseWriter, r *http.Request) {
 
 // probeHandler handles /probe endpoint
 func probeHandler(w http.ResponseWriter, r *http.Request) {
+	// Add request timeout to prevent goroutine leaks
+	ctx, cancel := context.WithTimeout(r.Context(), 30*time.Second)
+	defer cancel()
+	
 	module := r.URL.Query().Get("module")
 	target := r.URL.Query().Get("target")
 
