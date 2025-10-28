@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"crypto/sha256"
 	"encoding/json"
 	"fmt"
@@ -8,8 +9,17 @@ import (
 	"os/exec"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 )
+
+// Global semaphore to limit concurrent MTR processes
+var mtrSemaphore = make(chan struct{}, 5) // Max 5 concurrent MTR processes
+
+// MTR cache to avoid running MTR for same IP multiple times
+var mtrCache = make(map[string][]MTRHop)
+var mtrCacheMutex sync.RWMutex
+var mtrCacheTime = make(map[string]time.Time)
 
 // icmpProbe performs DNS lookup, ICMP ping, MTR and returns metrics in Prometheus format
 func icmpProbe(target string) (string, error) {
@@ -162,9 +172,32 @@ type MTRReport struct {
 	} `json:"report"`
 }
 
-// runMTRJSON runs MTR in JSON mode
+// runMTRJSON runs MTR in JSON mode with concurrency control, timeout and caching
 func runMTRJSON(ipAddress string) ([]MTRHop, error) {
-	cmd := exec.Command("mtr", "--json", "-c", "1", "-i", "0.1", "-m", "30", ipAddress)
+	// Check cache first (30 second TTL)
+	mtrCacheMutex.RLock()
+	if cached, exists := mtrCache[ipAddress]; exists {
+		if time.Since(mtrCacheTime[ipAddress]) < 30*time.Second {
+			mtrCacheMutex.RUnlock()
+			return cached, nil
+		}
+	}
+	mtrCacheMutex.RUnlock()
+
+	// Acquire semaphore to limit concurrent MTR processes
+	select {
+	case mtrSemaphore <- struct{}{}:
+		defer func() { <-mtrSemaphore }()
+	case <-time.After(5 * time.Second):
+		return nil, fmt.Errorf("MTR queue timeout - too many concurrent requests")
+	}
+
+	// Create context with timeout
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	// Reduced hops for better performance: -m 15 instead of 30
+	cmd := exec.CommandContext(ctx, "mtr", "--json", "-c", "1", "-i", "0.1", "-m", "15", ipAddress)
 	output, err := cmd.Output()
 	if err != nil {
 		return nil, err
@@ -187,6 +220,12 @@ func runMTRJSON(ipAddress string) ([]MTRHop, error) {
 			StDev: hub.StDev,
 		})
 	}
+
+	// Cache the result
+	mtrCacheMutex.Lock()
+	mtrCache[ipAddress] = result
+	mtrCacheTime[ipAddress] = time.Now()
+	mtrCacheMutex.Unlock()
 
 	return result, nil
 }
