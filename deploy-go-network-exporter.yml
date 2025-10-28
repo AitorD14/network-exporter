@@ -1,0 +1,231 @@
+---
+- name: Deploy Go Network Exporter
+  hosts: blackbox-exporter-mia01
+  become: true
+  serial: 1
+  vars:
+    github_token_clone: "{{ vault_github_token }}"
+    repo_url: "https://marciglesias17:{{ github_token_clone }}@github.com/CubePathInc/prometheus-network-exporter.git"
+    remote_deploy_dir: "/opt/go_network_exporter"
+    repo_branch: "feature/tcp-and-http4xx-modules"
+    exporter_port: 9115
+    exporter_user: "network-exporter"
+    exporter_group: "network-exporter"
+    go_version: "1.21.5"
+
+  tasks:
+    - name: Install system dependencies
+      package:
+        name:
+          - wget
+          - tar
+          - iputils-ping
+          - mtr-tiny
+          - git
+        state: present
+      retries: 3
+      delay: 5
+      register: pkg_result
+      until: pkg_result is succeeded
+
+    - name: Check if Go is installed
+      command: /usr/local/go/bin/go version
+      register: go_check
+      failed_when: false
+      changed_when: false
+
+    - name: Download and install Go
+      block:
+        - name: Download Go tarball
+          get_url:
+            url: "https://golang.org/dl/go{{ go_version }}.linux-amd64.tar.gz"
+            dest: "/tmp/go{{ go_version }}.linux-amd64.tar.gz"
+            timeout: 30
+
+        - name: Remove existing Go installation
+          file:
+            path: /usr/local/go
+            state: absent
+
+        - name: Extract Go tarball
+          unarchive:
+            src: "/tmp/go{{ go_version }}.linux-amd64.tar.gz"
+            dest: /usr/local
+            remote_src: yes
+            owner: root
+            group: root
+
+        - name: Create Go symlink
+          file:
+            src: /usr/local/go/bin/go
+            dest: /usr/bin/go
+            state: link
+      when: go_check.rc != 0 or "go{{ go_version }}" not in go_check.stdout
+
+    - name: Create exporter group
+      group:
+        name: "{{ exporter_group }}"
+        system: true
+        state: present
+
+    - name: Create exporter user
+      user:
+        name: "{{ exporter_user }}"
+        group: "{{ exporter_group }}"
+        system: true
+        shell: /usr/sbin/nologin
+        home: "{{ remote_deploy_dir }}"
+        createhome: false
+        state: present
+
+    - name: Remove existing repository directory
+      file:
+        path: "{{ remote_deploy_dir }}"
+        state: absent
+
+    - name: Clone network exporter repository
+      git:
+        repo: "{{ repo_url }}"
+        dest: "{{ remote_deploy_dir }}"
+        version: "{{ repo_branch }}"
+        force: yes
+
+    - name: Build Go binary
+      shell: |
+        cd {{ remote_deploy_dir }}/go-network-exporter
+        /usr/local/go/bin/go mod tidy
+        CGO_ENABLED=0 /usr/local/go/bin/go build -a -ldflags '-extldflags "-static"' -o network-exporter .
+      environment:
+        PATH: "/usr/local/go/bin:{{ ansible_env.PATH }}"
+        GOPATH: "/tmp/go"
+
+    - name: Set binary capabilities for ping/MTR
+      shell: |
+        setcap cap_net_raw+ep {{ remote_deploy_dir }}/go-network-exporter/network-exporter
+      become: yes
+
+    - name: Set ownership of deployment directory
+      file:
+        path: "{{ remote_deploy_dir }}"
+        owner: "{{ exporter_user }}"
+        group: "{{ exporter_group }}"
+        recurse: yes
+        state: directory
+
+    - name: Make binary executable
+      file:
+        path: "{{ remote_deploy_dir }}/go-network-exporter/network-exporter"
+        mode: '0755'
+
+    - name: Create systemd service file
+      copy:
+        content: |
+          [Unit]
+          Description=Prometheus Network Exporter (Go)
+          After=network.target
+          
+          [Service]
+          Type=simple
+          User=root
+          Group=root
+          WorkingDirectory={{ remote_deploy_dir }}/go-network-exporter
+          Environment="PORT={{ exporter_port }}"
+          ExecStart={{ remote_deploy_dir }}/go-network-exporter/network-exporter
+          Restart=always
+          RestartSec=5
+          StandardOutput=journal
+          StandardError=journal
+          SyslogIdentifier=network-exporter
+          
+          # Security settings
+          NoNewPrivileges=true
+          ProtectSystem=strict
+          ProtectHome=true
+          ReadWritePaths={{ remote_deploy_dir }}
+          
+          [Install]
+          WantedBy=multi-user.target
+        dest: /etc/systemd/system/network-exporter.service
+        mode: '0644'
+      notify:
+        - reload systemd
+        - restart go network exporter
+
+    - name: Start and enable Go network exporter service
+      systemd:
+        name: network-exporter
+        state: started
+        enabled: yes
+        daemon_reload: yes
+
+  post_tasks:
+    - name: Wait for service to start
+      wait_for:
+        port: "{{ exporter_port }}"
+        host: "{{ ansible_default_ipv4.address }}"
+        delay: 2
+        timeout: 10
+      ignore_errors: yes
+
+    - name: Check service status
+      systemd:
+        name: network-exporter
+      register: service_status
+
+    - name: Display service status
+      debug:
+        var: service_status.status
+
+    - name: Test health endpoint
+      uri:
+        url: "http://{{ ansible_default_ipv4.address }}:{{ exporter_port }}/health"
+        method: GET
+        return_content: yes
+        status_code: [200]
+      register: health_test
+      ignore_errors: yes
+
+    - name: Display health test result
+      debug:
+        msg: "Health endpoint returned: {{ health_test.content | default('Failed') }}"
+
+    - name: Test ICMP probe
+      uri:
+        url: "http://{{ ansible_default_ipv4.address }}:{{ exporter_port }}/probe?module=icmp&target=8.8.8.8"
+        method: GET
+        return_content: yes
+        status_code: [200]
+      register: icmp_test
+      ignore_errors: yes
+
+    - name: Display ICMP test result
+      debug:
+        msg: "ICMP probe status: {{ icmp_test.status | default('Failed') }}"
+
+    - name: Check service logs
+      command: journalctl -u go-network-exporter -n 10 --no-pager
+      register: service_logs
+      changed_when: false
+
+    - name: Display service logs
+      debug:
+        var: service_logs.stdout_lines
+
+    - name: Show CPU/Memory usage
+      shell: "ps aux | grep network-exporter | head -2"
+      register: resource_usage
+      changed_when: false
+
+    - name: Display resource usage
+      debug:
+        msg: "Resource usage: {{ resource_usage.stdout_lines }}"
+
+  handlers:
+    - name: reload systemd
+      systemd:
+        daemon_reload: yes
+
+    - name: restart network exporter
+      systemd:
+        name: network-exporter
+        state: restarted

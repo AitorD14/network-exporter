@@ -1,0 +1,208 @@
+package main
+
+import (
+	"crypto/sha256"
+	"encoding/json"
+	"fmt"
+	"net"
+	"os/exec"
+	"strconv"
+	"strings"
+	"time"
+)
+
+// icmpProbe performs DNS lookup, ICMP ping, MTR and returns metrics in Prometheus format
+func icmpProbe(target string) (string, error) {
+	metricPrefix := "networking_"
+	startTime := time.Now()
+
+	// 1) DNS lookup
+	startDNS := time.Now()
+	ips, err := net.LookupIP(target)
+	if err != nil {
+		return buildDNSFailResponse(metricPrefix, target, err), nil
+	}
+	endDNS := time.Now()
+	dnsLookupTime := endDNS.Sub(startDNS).Seconds()
+
+	if len(ips) == 0 {
+		return buildDNSFailResponse(metricPrefix, target, fmt.Errorf("no IP addresses found")), nil
+	}
+
+	// Extract IP and protocol
+	ipAddress := ips[0].String()
+	ipProtocol := 4
+	if ips[0].To4() == nil {
+		ipProtocol = 6
+	}
+	ipAddrHash := hashIP(ipAddress)
+
+	// 2) ICMP Ping
+	icmpSuccess, icmpReplyHopLimit, icmpTimes, err := runPing(ipAddress)
+	if err != nil {
+		icmpSuccess = 0
+	}
+	// Store DNS time in the icmp_times for convenience
+	icmpTimes["resolve"] = dnsLookupTime
+
+	// 3) MTR
+	mtrHops, err := runMTRJSON(ipAddress)
+	if err != nil {
+		// If MTR fails, continue without MTR data
+		mtrHops = []MTRHop{}
+	}
+
+	// 4) Calculate total duration
+	endProbe := time.Now()
+	probeDurationSeconds := endProbe.Sub(startTime).Seconds()
+
+	// Build Prometheus lines
+	var lines []string
+
+	// DNS metric
+	lines = append(lines, fmt.Sprintf("# HELP %sdns_lookup_time_seconds Time spent resolving DNS.", metricPrefix))
+	lines = append(lines, fmt.Sprintf("# TYPE %sdns_lookup_time_seconds gauge", metricPrefix))
+	lines = append(lines, fmt.Sprintf("%sdns_lookup_time_seconds %f", metricPrefix, dnsLookupTime))
+
+	// Total probe duration
+	lines = append(lines, fmt.Sprintf("# HELP %sduration_seconds Total duration of the ICMP probe (seconds).", metricPrefix))
+	lines = append(lines, fmt.Sprintf("# TYPE %sduration_seconds gauge", metricPrefix))
+	lines = append(lines, fmt.Sprintf("%sduration_seconds %f", metricPrefix, probeDurationSeconds))
+
+	// ICMP durations
+	lines = append(lines, fmt.Sprintf("# HELP %sicmp_duration_seconds Duration of ICMP request by phase.", metricPrefix))
+	lines = append(lines, fmt.Sprintf("# TYPE %sicmp_duration_seconds gauge", metricPrefix))
+	for phaseName, phaseValue := range icmpTimes {
+		lines = append(lines, fmt.Sprintf("%sicmp_duration_seconds{phase=\"%s\"} %f", metricPrefix, phaseName, phaseValue))
+	}
+
+	// TTL / hop limit from ping
+	lines = append(lines, fmt.Sprintf("# HELP %sicmp_reply_hop_limit Replied packet hop limit (IPv4 TTL).", metricPrefix))
+	lines = append(lines, fmt.Sprintf("# TYPE %sicmp_reply_hop_limit gauge", metricPrefix))
+	lines = append(lines, fmt.Sprintf("%sicmp_reply_hop_limit %f", metricPrefix, icmpReplyHopLimit))
+
+	// IP hash
+	lines = append(lines, fmt.Sprintf("# HELP %sip_addr_hash Hash of the resolved IP address.", metricPrefix))
+	lines = append(lines, fmt.Sprintf("# TYPE %sip_addr_hash gauge", metricPrefix))
+	lines = append(lines, fmt.Sprintf("%sip_addr_hash %d", metricPrefix, ipAddrHash))
+
+	// IP protocol
+	lines = append(lines, fmt.Sprintf("# HELP %sip_protocol IP protocol version (4 or 6).", metricPrefix))
+	lines = append(lines, fmt.Sprintf("# TYPE %sip_protocol gauge", metricPrefix))
+	lines = append(lines, fmt.Sprintf("%sip_protocol %d", metricPrefix, ipProtocol))
+
+	// Success
+	lines = append(lines, fmt.Sprintf("# HELP %ssuccess Whether the probe was successful (1 = OK, 0 = fail).", metricPrefix))
+	lines = append(lines, fmt.Sprintf("# TYPE %ssuccess gauge", metricPrefix))
+	lines = append(lines, fmt.Sprintf("%ssuccess %d", metricPrefix, icmpSuccess))
+
+	// MTR hops
+	for _, hop := range mtrHops {
+		lines = append(lines, fmt.Sprintf("%smtr_hop_loss{hop=\"%s\",host=\"%s\"} %f", metricPrefix, hop.Hop, hop.Host, hop.Loss))
+		lines = append(lines, fmt.Sprintf("%smtr_hop_avg_latency{hop=\"%s\",host=\"%s\"} %f", metricPrefix, hop.Hop, hop.Host, hop.Avg))
+		lines = append(lines, fmt.Sprintf("%smtr_hop_best_latency{hop=\"%s\",host=\"%s\"} %f", metricPrefix, hop.Hop, hop.Host, hop.Best))
+		lines = append(lines, fmt.Sprintf("%smtr_hop_worst_latency{hop=\"%s\",host=\"%s\"} %f", metricPrefix, hop.Hop, hop.Host, hop.Wrst))
+		lines = append(lines, fmt.Sprintf("%smtr_hop_stdev_latency{hop=\"%s\",host=\"%s\"} %f", metricPrefix, hop.Hop, hop.Host, hop.StDev))
+	}
+
+	return strings.Join(lines, "\n") + "\n", nil
+}
+
+// runPing runs a single ICMP ping using 'ping' command
+func runPing(ipAddress string) (int, float64, map[string]float64, error) {
+	startSetup := time.Now()
+	endSetup := time.Now()
+	setupTime := endSetup.Sub(startSetup).Seconds()
+
+	startRTT := time.Now()
+	replyTTL := 0.0
+	success := 0
+
+	cmd := exec.Command("ping", "-c", "1", "-W", "1", ipAddress)
+	output, err := cmd.Output()
+	endRTT := time.Now()
+	rttTime := endRTT.Sub(startRTT).Seconds()
+
+	if err == nil {
+		success = 1
+		// Extract TTL from output, e.g. "ttl=56"
+		outputStr := string(output)
+		if strings.Contains(outputStr, "ttl=") {
+			parts := strings.Split(outputStr, "ttl=")
+			if len(parts) > 1 {
+				ttlStr := strings.Fields(parts[1])[0]
+				if ttlValue, err := strconv.ParseFloat(ttlStr, 64); err == nil {
+					replyTTL = ttlValue
+				}
+			}
+		}
+	}
+
+	return success, replyTTL, map[string]float64{
+		"setup": setupTime,
+		"rtt":   rttTime,
+	}, nil
+}
+
+// MTRHop represents a single hop in MTR output
+type MTRHop struct {
+	Hop   string  `json:"count"`
+	Host  string  `json:"host"`
+	Loss  float64 `json:"Loss%"`
+	Avg   float64 `json:"Avg"`
+	Best  float64 `json:"Best"`
+	Wrst  float64 `json:"Wrst"`
+	StDev float64 `json:"StDev"`
+}
+
+// MTRReport represents the MTR JSON output structure
+type MTRReport struct {
+	Report struct {
+		Hubs []MTRHop `json:"hubs"`
+	} `json:"report"`
+}
+
+// runMTRJSON runs MTR in JSON mode
+func runMTRJSON(ipAddress string) ([]MTRHop, error) {
+	cmd := exec.Command("mtr", "--json", "-c", "1", "-i", "0.1", "-m", "30", ipAddress)
+	output, err := cmd.Output()
+	if err != nil {
+		return nil, err
+	}
+
+	var mtrReport MTRReport
+	if err := json.Unmarshal(output, &mtrReport); err != nil {
+		return nil, err
+	}
+
+	var result []MTRHop
+	for _, hub := range mtrReport.Report.Hubs {
+		result = append(result, MTRHop{
+			Hop:   strconv.Itoa(int(hub.Loss)), // Using Loss as count temporarily
+			Host:  hub.Host,
+			Loss:  hub.Loss,
+			Avg:   hub.Avg,
+			Best:  hub.Best,
+			Wrst:  hub.Wrst,
+			StDev: hub.StDev,
+		})
+	}
+
+	return result, nil
+}
+
+// hashIP creates a numeric hash from IP address
+func hashIP(ip string) uint32 {
+	h := sha256.Sum256([]byte(ip))
+	return uint32(h[0])<<24 | uint32(h[1])<<16 | uint32(h[2])<<8 | uint32(h[3])
+}
+
+// buildDNSFailResponse returns minimal Prometheus metrics with success=0
+func buildDNSFailResponse(metricPrefix, target string, err error) string {
+	var lines []string
+	lines = append(lines, fmt.Sprintf("# HELP %ssuccess Whether the probe was successful (1 = OK, 0 = fail).", metricPrefix))
+	lines = append(lines, fmt.Sprintf("# TYPE %ssuccess gauge", metricPrefix))
+	lines = append(lines, fmt.Sprintf("%ssuccess 0", metricPrefix))
+	lines = append(lines, fmt.Sprintf("# DNS resolution failed for '%s': %v", target, err))
+	return strings.Join(lines, "\n") + "\n"
+}
