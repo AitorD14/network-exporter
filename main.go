@@ -39,10 +39,8 @@ func main() {
 	r.HandleFunc("/health", healthHandler).Methods("GET")
 	r.HandleFunc("/probe", basicAuthWithConfig(webConfig, probeHandler)).Methods("GET")
 	
-	// Add debug profiling routes (only in debug mode)
-	if os.Getenv("DEBUG") == "true" || os.Getenv("DEBUG") == "1" {
-		r.PathPrefix("/debug/pprof/").Handler(http.DefaultServeMux)
-	}
+	// Add debug profiling routes (ALWAYS enabled to debug CPU issue)
+	r.PathPrefix("/debug/pprof/").Handler(http.DefaultServeMux)
 
 	// Server configuration
 	port := os.Getenv("PORT")

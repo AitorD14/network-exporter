@@ -173,6 +173,7 @@
           Group=root
           WorkingDirectory={{ remote_deploy_dir }}
           Environment="PORT={{ exporter_port }}"
+          Environment="DEBUG=true"
           ExecStart={{ remote_deploy_dir }}/network-exporter
           Restart=always
           RestartSec=5
@@ -221,10 +222,11 @@
 
     - name: Test health endpoint
       uri:
-        url: "http://{{ ansible_default_ipv4.address }}:{{ exporter_port }}/health"
+        url: "https://{{ ansible_default_ipv4.address }}:{{ exporter_port }}/health"
         method: GET
         return_content: yes
         status_code: [200]
+        validate_certs: no
       register: health_test
       ignore_errors: yes
 
@@ -232,12 +234,14 @@
       debug:
         msg: "Health endpoint returned: {{ health_test.content | default('Failed') }}"
 
-    - name: Test ICMP probe
+    - name: Test ICMP probe (will likely fail due to CPU issue)
       uri:
-        url: "http://{{ ansible_default_ipv4.address }}:{{ exporter_port }}/probe?module=icmp&target=8.8.8.8"
+        url: "https://{{ ansible_default_ipv4.address }}:{{ exporter_port }}/probe?module=icmp&target=8.8.8.8"
         method: GET
         return_content: yes
         status_code: [200]
+        validate_certs: no
+        timeout: 30
       register: icmp_test
       ignore_errors: yes
 
@@ -246,7 +250,7 @@
         msg: "ICMP probe status: {{ icmp_test.status | default('Failed') }}"
 
     - name: Check service logs
-      command: journalctl -u go-network-exporter -n 10 --no-pager
+      command: journalctl -u network-exporter -n 20 --no-pager
       register: service_logs
       changed_when: false
 
