@@ -43,8 +43,20 @@ func (ac *AuthCache) isValid(username, password string) bool {
 func (ac *AuthCache) add(username, password string) {
 	key := username + ":" + password
 	ac.mutex.Lock()
-	ac.cache[key] = time.Now().Add(30 * time.Second) // Cache for 30 seconds
+	ac.cache[key] = time.Now().Add(5 * time.Minute) // Cache for 5 minutes
 	ac.mutex.Unlock()
+}
+
+func (ac *AuthCache) cleanup() {
+	ac.mutex.Lock()
+	defer ac.mutex.Unlock()
+	
+	now := time.Now()
+	for key, expiry := range ac.cache {
+		if now.After(expiry) {
+			delete(ac.cache, key)
+		}
+	}
 }
 
 func main() {
@@ -61,6 +73,15 @@ func main() {
 	if err != nil {
 		log.Fatalf("Failed to load web config: %v", err)
 	}
+
+	// Start auth cache cleanup goroutine
+	go func() {
+		ticker := time.NewTicker(10 * time.Minute)
+		defer ticker.Stop()
+		for range ticker.C {
+			authCache.cleanup()
+		}
+	}()
 
 	// Create router
 	r := mux.NewRouter()
