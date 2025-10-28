@@ -54,11 +54,9 @@ func main() {
 		TLSNextProto: make(map[string]func(*http.Server, *tls.Conn, http.Handler)),
 		// Optimize for high concurrency
 		MaxHeaderBytes: 1 << 16, // 64KB
-		// Reduce TLS handshake timeout to fail fast
+		// Basic TLS config
 		TLSConfig: &tls.Config{
-			ReadTimeout:       5 * time.Second,
-			WriteTimeout:      5 * time.Second,
-			HandshakeTimeout:  3 * time.Second,
+			MinVersion: tls.VersionTLS12,
 		},
 		// Suppress TLS error logging
 		ErrorLog: log.New(io.Discard, "", 0),
