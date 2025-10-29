@@ -16,7 +16,7 @@ import (
 )
 
 // MTR semaphore to limit concurrent processes and prevent CPU saturation
-var mtrSemaphore = make(chan struct{}, 3) // Max 3 concurrent MTR processes
+var mtrSemaphore = make(chan struct{}, 2) // Max 2 concurrent MTR processes
 
 // MTR cache to avoid running MTR for same IP multiple times
 var mtrCache = make(map[string][]MTRHop)
@@ -273,10 +273,10 @@ type MTRReport struct {
 
 // runMTRJSON runs MTR in JSON mode with concurrency control, timeout and caching
 func runMTRJSON(ctx context.Context, ipAddress string) ([]MTRHop, error) {
-	// Check cache first (30 second TTL)
+	// Check cache first (120 second TTL)
 	mtrCacheMutex.RLock()
 	if cached, exists := mtrCache[ipAddress]; exists {
-		if time.Since(mtrCacheTime[ipAddress]) < 30*time.Second {
+		if time.Since(mtrCacheTime[ipAddress]) < 120*time.Second {
 			mtrCacheMutex.RUnlock()
 			return cached, nil
 		}
@@ -292,7 +292,7 @@ func runMTRJSON(ctx context.Context, ipAddress string) ([]MTRHop, error) {
 	defer cancel()
 
 	// Optimized for speed: fewer hops, faster interval
-	cmd := exec.CommandContext(mtrCtx, "mtr", "--json", "-c", "1", "-i", "0.05", "-m", "10", ipAddress)
+	cmd := exec.CommandContext(mtrCtx, "mtr", "--json", "-c", "1", "-i", "0.05", "-m", "6", ipAddress)
 	output, err := cmd.Output()
 	if err != nil {
 		return nil, err
