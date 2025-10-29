@@ -16,7 +16,7 @@ import (
 )
 
 // MTR semaphore to limit concurrent processes and prevent CPU saturation
-var mtrSemaphore = make(chan struct{}, 2) // Max 2 concurrent MTR processes
+var mtrSemaphore = make(chan struct{}, 1) // Max 1 concurrent MTR process
 
 // MTR cache to avoid running MTR for same IP multiple times
 var mtrCache = make(map[string][]MTRHop)
@@ -287,13 +287,37 @@ func runMTRJSON(ctx context.Context, ipAddress string) ([]MTRHop, error) {
 	mtrSemaphore <- struct{}{}        // Block until slot available
 	defer func() { <-mtrSemaphore }() // Release slot when done
 
-	// Use provided context with sufficient timeout for MTR
-	mtrCtx, cancel := context.WithTimeout(ctx, 8*time.Second)
+	// Use very short timeout for MTR to prevent CPU overload
+	mtrCtx, cancel := context.WithTimeout(ctx, 3*time.Second)
 	defer cancel()
 
-	// Optimized for speed: fewer hops, faster interval
-	cmd := exec.CommandContext(mtrCtx, "mtr", "--json", "-c", "1", "-i", "0.05", "-m", "6", ipAddress)
-	output, err := cmd.Output()
+	// Ultra-fast MTR: minimal count, higher interval, fewer hops
+	cmd := exec.CommandContext(mtrCtx, "mtr", "--json", "-c", "1", "-i", "0.1", "-m", "4", ipAddress)
+	
+	// Create a channel to receive the result
+	done := make(chan struct{})
+	var output []byte
+	var err error
+	
+	go func() {
+		defer close(done)
+		output, err = cmd.Output()
+	}()
+	
+	// Wait for either completion or timeout
+	select {
+	case <-done:
+		// Command completed
+		if err != nil {
+			return nil, err
+		}
+	case <-mtrCtx.Done():
+		// Force kill the process if it's still running
+		if cmd.Process != nil {
+			cmd.Process.Kill()
+		}
+		return nil, fmt.Errorf("MTR timeout exceeded")
+	}
 	if err != nil {
 		return nil, err
 	}
