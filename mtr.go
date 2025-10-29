@@ -236,12 +236,12 @@ func runMTRJSONModule(ctx context.Context, ipAddress string) ([]MTRHop, error) {
 	mtrModuleSemaphore <- struct{}{}        // Block until slot available
 	defer func() { <-mtrModuleSemaphore }() // Release slot when done
 
-	// Use very short timeout for MTR to prevent CPU overload
-	mtrCtx, cancel := context.WithTimeout(ctx, 4*time.Second)
+	// Use reasonable timeout for MTR while preventing CPU overload
+	mtrCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
 	defer cancel()
 
-	// Ultra-fast MTR: minimal count, higher interval, moderate hops for better coverage
-	cmd := exec.CommandContext(mtrCtx, "mtr", "--json", "-c", "3", "-i", "0.2", "-m", "8", ipAddress)
+	// Balanced MTR: reasonable count and hops for good coverage
+	cmd := exec.CommandContext(mtrCtx, "mtr", "--json", "-c", "3", "-i", "0.1", "-m", "10", ipAddress)
 	
 	// Create a channel to receive the result
 	done := make(chan struct{})
