@@ -1,0 +1,50 @@
+version: '3.8'
+
+services:
+  network-exporter:
+    build: .
+    container_name: go-network-exporter
+    restart: unless-stopped
+    ports:
+      - "9115:9115"
+    environment:
+      - PORT=9115
+      - DEBUG=false
+    # Required capabilities for ICMP ping and MTR
+    cap_add:
+      - NET_RAW
+      - NET_ADMIN
+    # Security options
+    security_opt:
+      - no-new-privileges:true
+    # Resource limits to prevent CPU overload
+    deploy:
+      resources:
+        limits:
+          cpus: '1.0'
+          memory: 256M
+        reservations:
+          cpus: '0.1'
+          memory: 64M
+    # Health check
+    healthcheck:
+      test: ["CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://localhost:9115/health"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+    # Logging configuration
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
+    # Network mode
+    network_mode: bridge
+    # Volumes for SSL certificates (optional)
+    volumes:
+      - ./certs:/etc/network_exporter:ro
+    # Process limits to prevent fork bombs
+    ulimits:
+      nproc: 100
+      nofile: 1024

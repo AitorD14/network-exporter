@@ -1,13 +1,13 @@
-# Build stage
+# Multi-stage build for Go network exporter
 FROM golang:1.21-alpine AS builder
 
 # Install build dependencies
-RUN apk add --no-cache git
+RUN apk add --no-cache git ca-certificates tzdata
 
 # Set working directory
 WORKDIR /app
 
-# Copy go mod and sum files
+# Copy go mod files
 COPY go.mod go.sum ./
 
 # Download dependencies
@@ -16,40 +16,55 @@ RUN go mod download
 # Copy source code
 COPY *.go ./
 
-# Build the application
-RUN CGO_ENABLED=0 GOOS=linux go build -a -installsuffix cgo -o network-exporter .
+# Build static binary
+RUN CGO_ENABLED=0 GOOS=linux go build -a -ldflags '-extldflags "-static"' -o network-exporter .
 
-# Final stage
-FROM alpine:latest
+# Final stage - minimal runtime image
+FROM alpine:3.18
 
-# Install runtime dependencies
-RUN apk --no-cache add ca-certificates iputils mtr
+# Install runtime dependencies and security updates
+RUN apk add --no-cache \
+    iputils \
+    mtr \
+    ca-certificates \
+    tzdata \
+    wget \
+    && rm -rf /var/cache/apk/*
 
-# Create non-root user
-RUN addgroup -g 1001 -S appgroup && \
-    adduser -u 1001 -S appuser -G appgroup
+# Create app directory
+WORKDIR /app
 
-# Set working directory
-WORKDIR /root/
-
-# Copy the binary from builder stage
+# Copy binary from builder stage
 COPY --from=builder /app/network-exporter .
 
-# Make binary executable
-RUN chmod +x ./network-exporter
+# Copy configuration files if they exist
+COPY web_config.yml* ./
 
-# Add capabilities for ping and MTR
-RUN setcap cap_net_raw+ep ./network-exporter
+# Make binary executable and set capabilities for ICMP
+RUN chmod +x ./network-exporter && \
+    setcap cap_net_raw+ep ./network-exporter
+
+# Create non-root user AFTER setting capabilities
+RUN addgroup -g 1001 -S netexporter && \
+    adduser -u 1001 -S netexporter -G netexporter
+
+# Create config directory
+RUN mkdir -p /etc/network_exporter && \
+    chown -R netexporter:netexporter /app /etc/network_exporter
 
 # Expose port
-EXPOSE 9116
+EXPOSE 9115
 
-# Switch to non-root user
-USER appuser
+# Set environment variables
+ENV PORT=9115
+ENV DEBUG=false
 
 # Health check
-HEALTHCHECK --interval=30s --timeout=3s --start-period=5s --retries=3 \
-  CMD wget --no-verbose --tries=1 --spider http://localhost:9116/health || exit 1
+HEALTHCHECK --interval=15s --timeout=5s --start-period=10s --retries=3 \
+    CMD wget --no-verbose --tries=1 --spider http://localhost:9115/health || exit 1
+
+# Switch to non-root user
+USER netexporter
 
 # Run the binary
-ENTRYPOINT ["./network-exporter"]
+CMD ["./network-exporter"]

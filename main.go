@@ -198,6 +198,13 @@ func probeHandler(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		fmt.Fprint(w, result)
+	case "mtr":
+		result, err := mtrProbe(ctx, target)
+		if err != nil {
+			http.Error(w, fmt.Sprintf("MTR probe failed: %v\n", err), http.StatusInternalServerError)
+			return
+		}
+		fmt.Fprint(w, result)
 	default:
 		http.Error(w, fmt.Sprintf("Error: Unsupported module '%s'\n", module), http.StatusBadRequest)
 	}

@@ -3,27 +3,15 @@ package main
 import (
 	"context"
 	"crypto/sha256"
-	"encoding/json"
 	"fmt"
-	"log"
 	"net"
-	"os"
 	"os/exec"
 	"strconv"
 	"strings"
-	"sync"
 	"time"
 )
 
-// MTR semaphore to limit concurrent processes and prevent CPU saturation
-var mtrSemaphore = make(chan struct{}, 1) // Max 1 concurrent MTR process
-
-// MTR cache to avoid running MTR for same IP multiple times
-var mtrCache = make(map[string][]MTRHop)
-var mtrCacheMutex sync.RWMutex
-var mtrCacheTime = make(map[string]time.Time)
-
-// icmpProbe performs DNS lookup, ICMP ping, MTR and returns metrics in Prometheus format
+// icmpProbe performs DNS lookup and ICMP ping and returns metrics in Prometheus format
 func icmpProbe(ctx context.Context, target string) (string, error) {
 	metricPrefix := "networking_"
 	startTime := time.Now()
@@ -67,17 +55,7 @@ func icmpProbe(ctx context.Context, target string) (string, error) {
 	// Store DNS time in the icmp_times for convenience
 	icmpTimes["resolve"] = dnsLookupTime
 
-	// 3) MTR - Network path tracing
-	mtrHops, err := runMTRJSON(ctx, ipAddress)
-	if err != nil {
-		// If MTR fails, continue without MTR data
-		if os.Getenv("DEBUG") == "true" || os.Getenv("DEBUG") == "1" {
-			log.Printf("DEBUG: MTR failed for %s: %v", ipAddress, err)
-		}
-		mtrHops = []MTRHop{}
-	}
-
-	// 4) Calculate total duration
+	// 3) Calculate total duration
 	endProbe := time.Now()
 	probeDurationSeconds := endProbe.Sub(startTime).Seconds()
 
@@ -166,53 +144,6 @@ func icmpProbe(ctx context.Context, target string) (string, error) {
 	builder.WriteString(strconv.Itoa(icmpSuccess))
 	builder.WriteString("\n")
 
-	// MTR hops (currently disabled but code ready)
-	for _, hop := range mtrHops {
-		builder.WriteString(metricPrefix)
-		builder.WriteString("mtr_hop_loss{hop=\"")
-		builder.WriteString(strconv.Itoa(hop.Hop))
-		builder.WriteString("\",host=\"")
-		builder.WriteString(hop.Host)
-		builder.WriteString("\"} ")
-		builder.WriteString(strconv.FormatFloat(hop.Loss, 'f', 6, 64))
-		builder.WriteString("\n")
-		
-		builder.WriteString(metricPrefix)
-		builder.WriteString("mtr_hop_avg_latency{hop=\"")
-		builder.WriteString(strconv.Itoa(hop.Hop))
-		builder.WriteString("\",host=\"")
-		builder.WriteString(hop.Host)
-		builder.WriteString("\"} ")
-		builder.WriteString(strconv.FormatFloat(hop.Avg, 'f', 6, 64))
-		builder.WriteString("\n")
-		
-		builder.WriteString(metricPrefix)
-		builder.WriteString("mtr_hop_best_latency{hop=\"")
-		builder.WriteString(strconv.Itoa(hop.Hop))
-		builder.WriteString("\",host=\"")
-		builder.WriteString(hop.Host)
-		builder.WriteString("\"} ")
-		builder.WriteString(strconv.FormatFloat(hop.Best, 'f', 6, 64))
-		builder.WriteString("\n")
-		
-		builder.WriteString(metricPrefix)
-		builder.WriteString("mtr_hop_worst_latency{hop=\"")
-		builder.WriteString(strconv.Itoa(hop.Hop))
-		builder.WriteString("\",host=\"")
-		builder.WriteString(hop.Host)
-		builder.WriteString("\"} ")
-		builder.WriteString(strconv.FormatFloat(hop.Wrst, 'f', 6, 64))
-		builder.WriteString("\n")
-		
-		builder.WriteString(metricPrefix)
-		builder.WriteString("mtr_hop_stdev_latency{hop=\"")
-		builder.WriteString(strconv.Itoa(hop.Hop))
-		builder.WriteString("\",host=\"")
-		builder.WriteString(hop.Host)
-		builder.WriteString("\"} ")
-		builder.WriteString(strconv.FormatFloat(hop.StDev, 'f', 6, 64))
-		builder.WriteString("\n")
-	}
 
 	return builder.String(), nil
 }
@@ -253,101 +184,6 @@ func runPing(ctx context.Context, ipAddress string) (int, float64, map[string]fl
 	}, nil
 }
 
-// MTRHop represents a single hop in MTR output
-type MTRHop struct {
-	Hop   int     `json:"count"`
-	Host  string  `json:"host"`
-	Loss  float64 `json:"Loss%"`
-	Avg   float64 `json:"Avg"`
-	Best  float64 `json:"Best"`
-	Wrst  float64 `json:"Wrst"`
-	StDev float64 `json:"StDev"`
-}
-
-// MTRReport represents the MTR JSON output structure
-type MTRReport struct {
-	Report struct {
-		Hubs []MTRHop `json:"hubs"`
-	} `json:"report"`
-}
-
-// runMTRJSON runs MTR in JSON mode with concurrency control, timeout and caching
-func runMTRJSON(ctx context.Context, ipAddress string) ([]MTRHop, error) {
-	// Check cache first (120 second TTL)
-	mtrCacheMutex.RLock()
-	if cached, exists := mtrCache[ipAddress]; exists {
-		if time.Since(mtrCacheTime[ipAddress]) < 120*time.Second {
-			mtrCacheMutex.RUnlock()
-			return cached, nil
-		}
-	}
-	mtrCacheMutex.RUnlock()
-
-	// Acquire semaphore to limit concurrent MTR processes (wait for slot)
-	mtrSemaphore <- struct{}{}        // Block until slot available
-	defer func() { <-mtrSemaphore }() // Release slot when done
-
-	// Use very short timeout for MTR to prevent CPU overload
-	mtrCtx, cancel := context.WithTimeout(ctx, 3*time.Second)
-	defer cancel()
-
-	// Ultra-fast MTR: minimal count, higher interval, fewer hops
-	cmd := exec.CommandContext(mtrCtx, "mtr", "--json", "-c", "1", "-i", "0.1", "-m", "4", ipAddress)
-	
-	// Create a channel to receive the result
-	done := make(chan struct{})
-	var output []byte
-	var err error
-	
-	go func() {
-		defer close(done)
-		output, err = cmd.Output()
-	}()
-	
-	// Wait for either completion or timeout
-	select {
-	case <-done:
-		// Command completed
-		if err != nil {
-			return nil, err
-		}
-	case <-mtrCtx.Done():
-		// Force kill the process if it's still running
-		if cmd.Process != nil {
-			cmd.Process.Kill()
-		}
-		return nil, fmt.Errorf("MTR timeout exceeded")
-	}
-	if err != nil {
-		return nil, err
-	}
-
-	var mtrReport MTRReport
-	if err := json.Unmarshal(output, &mtrReport); err != nil {
-		return nil, err
-	}
-
-	var result []MTRHop
-	for _, hub := range mtrReport.Report.Hubs {
-		result = append(result, MTRHop{
-			Hop:   hub.Hop, // This maps to "count" field in JSON
-			Host:  hub.Host,
-			Loss:  hub.Loss,
-			Avg:   hub.Avg,
-			Best:  hub.Best,
-			Wrst:  hub.Wrst,
-			StDev: hub.StDev,
-		})
-	}
-
-	// Cache the result
-	mtrCacheMutex.Lock()
-	mtrCache[ipAddress] = result
-	mtrCacheTime[ipAddress] = time.Now()
-	mtrCacheMutex.Unlock()
-
-	return result, nil
-}
 
 // hashIP creates a numeric hash from IP address
 func hashIP(ip string) uint32 {
