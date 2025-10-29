@@ -59,7 +59,7 @@ func httpProbe(ctx context.Context, target string, expect2xx bool) (string, erro
 	tr := &http.Transport{
 		TLSClientConfig: &tls.Config{InsecureSkipVerify: true},
 		DialContext: (&net.Dialer{
-			Timeout: 10 * time.Second,
+			Timeout: 3 * time.Second,
 		}).DialContext,
 		MaxIdleConns:        10,
 		MaxIdleConnsPerHost: 2,
@@ -67,7 +67,7 @@ func httpProbe(ctx context.Context, target string, expect2xx bool) (string, erro
 	}
 	client := &http.Client{
 		Transport: tr,
-		Timeout:   10 * time.Second,
+		Timeout:   3 * time.Second,
 	}
 
 	// Create request with context

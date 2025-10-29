@@ -68,7 +68,7 @@ func icmpProbe(ctx context.Context, target string) (string, error) {
 	icmpTimes["resolve"] = dnsLookupTime
 
 	// 3) MTR - Network path tracing
-	mtrHops, err := runMTRJSON(ipAddress)
+	mtrHops, err := runMTRJSON(ctx, ipAddress)
 	if err != nil {
 		// If MTR fails, continue without MTR data
 		if os.Getenv("DEBUG") == "true" || os.Getenv("DEBUG") == "1" {
@@ -272,7 +272,7 @@ type MTRReport struct {
 }
 
 // runMTRJSON runs MTR in JSON mode with concurrency control, timeout and caching
-func runMTRJSON(ipAddress string) ([]MTRHop, error) {
+func runMTRJSON(ctx context.Context, ipAddress string) ([]MTRHop, error) {
 	// Check cache first (30 second TTL)
 	mtrCacheMutex.RLock()
 	if cached, exists := mtrCache[ipAddress]; exists {
@@ -291,12 +291,12 @@ func runMTRJSON(ipAddress string) ([]MTRHop, error) {
 		return nil, fmt.Errorf("MTR queue timeout - too many concurrent requests")
 	}
 
-	// Create context with timeout (needs more than 5s even with optimizations)
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	// Use provided context with shorter timeout for MTR
+	mtrCtx, cancel := context.WithTimeout(ctx, 4*time.Second)
 	defer cancel()
 
 	// Optimized for speed: fewer hops, faster interval
-	cmd := exec.CommandContext(ctx, "mtr", "--json", "-c", "1", "-i", "0.05", "-m", "10", ipAddress)
+	cmd := exec.CommandContext(mtrCtx, "mtr", "--json", "-c", "1", "-i", "0.05", "-m", "10", ipAddress)
 	output, err := cmd.Output()
 	if err != nil {
 		return nil, err
@@ -342,5 +342,15 @@ func buildDNSFailResponse(metricPrefix, target string, err error) string {
 	lines = append(lines, fmt.Sprintf("# TYPE %ssuccess gauge", metricPrefix))
 	lines = append(lines, fmt.Sprintf("%ssuccess 0", metricPrefix))
 	lines = append(lines, fmt.Sprintf("# DNS resolution failed for '%s': %v", target, err))
+	return strings.Join(lines, "\n") + "\n"
+}
+
+// buildICMPFailResponse returns minimal Prometheus metrics with success=0 for ICMP failures
+func buildICMPFailResponse(metricPrefix, target string, err error) string {
+	var lines []string
+	lines = append(lines, fmt.Sprintf("# HELP %ssuccess Whether the probe was successful (1 = OK, 0 = fail).", metricPrefix))
+	lines = append(lines, fmt.Sprintf("# TYPE %ssuccess gauge", metricPrefix))
+	lines = append(lines, fmt.Sprintf("%ssuccess 0", metricPrefix))
+	lines = append(lines, fmt.Sprintf("# ICMP probe failed for '%s': %v", target, err))
 	return strings.Join(lines, "\n") + "\n"
 }

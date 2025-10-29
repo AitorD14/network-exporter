@@ -31,13 +31,13 @@ func tcpProbe(ctx context.Context, target string) (string, error) {
 	resolver := &net.Resolver{}
 	ips, err := resolver.LookupIPAddr(ctx, host)
 	if err != nil {
-		return buildTCPFailResponse(metricPrefix, target, err), nil
+		return buildTCPDNSFailResponse(metricPrefix, target, err), nil
 	}
 	endDNS := time.Now()
 	dnsLookupTime := endDNS.Sub(startDNS).Seconds()
 
 	if len(ips) == 0 {
-		return buildTCPFailResponse(metricPrefix, target, fmt.Errorf("no IP addresses found")), nil
+		return buildTCPDNSFailResponse(metricPrefix, target, fmt.Errorf("no IP addresses found")), nil
 	}
 
 	// IP details
@@ -51,7 +51,7 @@ func tcpProbe(ctx context.Context, target string) (string, error) {
 	// TCP connection timing with context
 	startConnect := time.Now()
 	address := net.JoinHostPort(ipAddress, portStr)
-	d := &net.Dialer{Timeout: 10 * time.Second}
+	d := &net.Dialer{Timeout: 3 * time.Second}
 	conn, err := d.DialContext(ctx, "tcp", address)
 	endConnect := time.Now()
 	connectDuration := endConnect.Sub(startConnect).Seconds()
@@ -61,34 +61,34 @@ func tcpProbe(ctx context.Context, target string) (string, error) {
 	var sslEarliestCertExpiry float64
 
 	if err != nil {
-		success = 0
-	} else {
-		success = 1
-		defer conn.Close()
+		return buildTCPFailResponse(metricPrefix, target, err), nil
+	}
+	
+	success = 1
+	defer conn.Close()
 
-		// Check if this is a TLS port (common secure ports)
-		isTLSPort := port == 443 || port == 993 || port == 995 || port == 465 || port == 587
-		if isTLSPort {
-			// Attempt TLS handshake
-			startTLS := time.Now()
-			tlsConn := tls.Client(conn, &tls.Config{
-				ServerName:         host,
-				InsecureSkipVerify: true,
-			})
-			
-			if err := tlsConn.Handshake(); err == nil {
-				endTLS := time.Now()
-				tlsHandshakeDuration = endTLS.Sub(startTLS).Seconds()
+	// Check if this is a TLS port (common secure ports)
+	isTLSPort := port == 443 || port == 993 || port == 995 || port == 465 || port == 587
+	if isTLSPort {
+		// Attempt TLS handshake
+		startTLS := time.Now()
+		tlsConn := tls.Client(conn, &tls.Config{
+			ServerName:         host,
+			InsecureSkipVerify: true,
+		})
+		
+		if err := tlsConn.Handshake(); err == nil {
+			endTLS := time.Now()
+			tlsHandshakeDuration = endTLS.Sub(startTLS).Seconds()
 
-				// Get certificate info
-				state := tlsConn.ConnectionState()
-				if len(state.PeerCertificates) > 0 {
-					cert := state.PeerCertificates[0]
-					sslEarliestCertExpiry = float64(cert.NotAfter.Unix())
-				}
+			// Get certificate info
+			state := tlsConn.ConnectionState()
+			if len(state.PeerCertificates) > 0 {
+				cert := state.PeerCertificates[0]
+				sslEarliestCertExpiry = float64(cert.NotAfter.Unix())
 			}
-			tlsConn.Close()
 		}
+		tlsConn.Close()
 	}
 
 	// Calculate total duration
@@ -201,5 +201,15 @@ func buildTCPFailResponse(metricPrefix, target string, err error) string {
 	lines = append(lines, fmt.Sprintf("# TYPE %sprobe_success gauge", metricPrefix))
 	lines = append(lines, fmt.Sprintf("%sprobe_success 0", metricPrefix))
 	lines = append(lines, fmt.Sprintf("# TCP probe failed for '%s': %v", target, err))
+	return strings.Join(lines, "\n") + "\n"
+}
+
+// buildTCPDNSFailResponse returns minimal Prometheus metrics with success=0 for DNS failures
+func buildTCPDNSFailResponse(metricPrefix, target string, err error) string {
+	var lines []string
+	lines = append(lines, fmt.Sprintf("# HELP %sprobe_success Whether the probe was successful (1 = OK, 0 = fail).", metricPrefix))
+	lines = append(lines, fmt.Sprintf("# TYPE %sprobe_success gauge", metricPrefix))
+	lines = append(lines, fmt.Sprintf("%sprobe_success 0", metricPrefix))
+	lines = append(lines, fmt.Sprintf("# TCP DNS resolution failed for '%s': %v", target, err))
 	return strings.Join(lines, "\n") + "\n"
 }

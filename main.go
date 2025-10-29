@@ -149,8 +149,8 @@ func healthHandler(w http.ResponseWriter, r *http.Request) {
 
 // probeHandler handles /probe endpoint
 func probeHandler(w http.ResponseWriter, r *http.Request) {
-	// Add aggressive request timeout to prevent goroutine leaks
-	ctx, cancel := context.WithTimeout(r.Context(), 15*time.Second)
+	// Add request timeout matching Blackbox Exporter behavior  
+	ctx, cancel := context.WithTimeout(r.Context(), 5*time.Second)
 	defer cancel()
 	
 	module := r.URL.Query().Get("module")
