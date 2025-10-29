@@ -15,7 +15,8 @@ import (
 	"time"
 )
 
-// Removed MTR semaphore to prevent blocking and timeouts
+// MTR semaphore to limit concurrent processes and prevent CPU saturation
+var mtrSemaphore = make(chan struct{}, 3) // Max 3 concurrent MTR processes
 
 // MTR cache to avoid running MTR for same IP multiple times
 var mtrCache = make(map[string][]MTRHop)
@@ -282,7 +283,9 @@ func runMTRJSON(ctx context.Context, ipAddress string) ([]MTRHop, error) {
 	}
 	mtrCacheMutex.RUnlock()
 
-	// No semaphore blocking - let MTR run freely with context timeout
+	// Acquire semaphore to limit concurrent MTR processes (wait for slot)
+	mtrSemaphore <- struct{}{}        // Block until slot available
+	defer func() { <-mtrSemaphore }() // Release slot when done
 
 	// Use provided context with sufficient timeout for MTR
 	mtrCtx, cancel := context.WithTimeout(ctx, 8*time.Second)

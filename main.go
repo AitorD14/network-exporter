@@ -149,8 +149,8 @@ func healthHandler(w http.ResponseWriter, r *http.Request) {
 
 // probeHandler handles /probe endpoint
 func probeHandler(w http.ResponseWriter, r *http.Request) {
-	// Add request timeout with enough time for MTR operations
-	ctx, cancel := context.WithTimeout(r.Context(), 10*time.Second)
+	// Add request timeout with enough time for MTR operations and queue waiting
+	ctx, cancel := context.WithTimeout(r.Context(), 30*time.Second)
 	defer cancel()
 	
 	module := r.URL.Query().Get("module")
