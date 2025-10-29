@@ -23,21 +23,32 @@ var mtrModuleCache = make(map[string][]MTRHop)
 var mtrModuleCacheMutex sync.RWMutex
 var mtrModuleCacheTime = make(map[string]time.Time)
 
-// MTRHop represents a single hop in MTR output
+// MTRHop represents a single hop in MTR output (final structure)
 type MTRHop struct {
-	Hop   int     `json:"count"`
-	Host  string  `json:"host"`
-	Loss  float64 `json:"Loss%"`
-	Avg   float64 `json:"Avg"`
-	Best  float64 `json:"Best"`
-	Wrst  float64 `json:"Wrst"`
-	StDev float64 `json:"StDev"`
+	Hop   int
+	Host  string
+	Loss  float64
+	Avg   float64
+	Best  float64
+	Wrst  float64
+	StDev float64
+}
+
+// MTRHopRaw represents the raw JSON structure from MTR (with flexible count field)
+type MTRHopRaw struct {
+	Count interface{} `json:"count"` // Can be string or int
+	Host  string      `json:"host"`
+	Loss  float64     `json:"Loss%"`
+	Avg   float64     `json:"Avg"`
+	Best  float64     `json:"Best"`
+	Wrst  float64     `json:"Wrst"`
+	StDev float64     `json:"StDev"`
 }
 
 // MTRReport represents the MTR JSON output structure
 type MTRReport struct {
 	Report struct {
-		Hubs []MTRHop `json:"hubs"`
+		Hubs []MTRHopRaw `json:"hubs"`
 	} `json:"report"`
 }
 
@@ -275,8 +286,25 @@ func runMTRJSONModule(ctx context.Context, ipAddress string) ([]MTRHop, error) {
 
 	var result []MTRHop
 	for _, hub := range mtrReport.Report.Hubs {
+		// Convert count field (can be string or int)
+		var hopNumber int
+		switch v := hub.Count.(type) {
+		case string:
+			if parsed, err := strconv.Atoi(v); err == nil {
+				hopNumber = parsed
+			} else {
+				hopNumber = 0 // Default fallback
+			}
+		case float64:
+			hopNumber = int(v)
+		case int:
+			hopNumber = v
+		default:
+			hopNumber = 0 // Default fallback
+		}
+		
 		result = append(result, MTRHop{
-			Hop:   hub.Hop, // This maps to "count" field in JSON
+			Hop:   hopNumber,
 			Host:  hub.Host,
 			Loss:  hub.Loss,
 			Avg:   hub.Avg,
