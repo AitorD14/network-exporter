@@ -240,8 +240,8 @@ func runMTRJSONModule(ctx context.Context, ipAddress string) ([]MTRHop, error) {
 	mtrCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
 	defer cancel()
 
-	// Balanced MTR: reasonable count and hops for good coverage
-	cmd := exec.CommandContext(mtrCtx, "mtr", "--json", "-c", "3", "-i", "0.1", "-m", "10", ipAddress)
+	// Extended MTR: more hops to reach final destination
+	cmd := exec.CommandContext(mtrCtx, "mtr", "--json", "-c", "3", "-i", "0.1", "-m", "20", ipAddress)
 	
 	// Create a channel to receive the result
 	done := make(chan struct{})
