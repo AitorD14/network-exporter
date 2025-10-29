@@ -1,6 +1,6 @@
 ---
 - name: Deploy Go Network Exporter
-  hosts: blackbox-exporter-mia01
+  hosts: blackbox-exporter-ash01
   become: true
   serial: 1
   vars:
@@ -173,7 +173,6 @@
           Group=root
           WorkingDirectory={{ remote_deploy_dir }}
           Environment="PORT={{ exporter_port }}"
-          # Environment="DEBUG=true"  # Uncomment for debugging
           ExecStart={{ remote_deploy_dir }}/network-exporter
           Restart=always
           RestartSec=5
